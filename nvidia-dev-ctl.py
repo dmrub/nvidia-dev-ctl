@@ -4,15 +4,14 @@
 # https://docs.nvidia.com/grid/10.0/grid-vgpu-user-guide/index.html#vgpu-information-in-sysfs-file-system
 # https://man7.org/linux/man-pages/man5/sysfs.5.html
 
-import sys
 import argparse
 import logging
 import os
 import os.path
+import sys
 import time
 from collections import OrderedDict
-from types import FunctionType
-from typing import TypeVar, Type
+from typing import Callable, Optional, Sequence
 
 LOG = logging.getLogger(__name__)
 
@@ -24,37 +23,49 @@ PCI_BUS_DEVICE_PATH = "/sys/bus/pci/devices"
 
 NVIDIA_VENDOR = "10de"
 
+PathWaiterFunc = Callable[[str], bool]
+PathWaiterCB = Optional[PathWaiterFunc]
+
 
 class DevCtlException(Exception):
     pass
 
 
-class InvalidPCIDeviceName(DevCtlException):
-    def __init__(self, name):
+class SysfsPathNotFoundError(DevCtlException):
+    def __init__(self, path: str, message: str = None):
+        super().__init__(message if message is not None else "Sysfs path '{}' not found".format(path))
+        self.path = path
+
+
+class DeviceDriverPathNotFound(SysfsPathNotFoundError):
+    def __init__(self, path: str):
+        super().__init__(path, "Device driver path '{}' not found".format(path))
+
+
+class UnbindDriverPathNotFound(SysfsPathNotFoundError):
+    def __init__(self, path: str):
+        super().__init__(path, "Unbind driver path '{}' not found".format(path))
+
+
+class MdevBusPathNotFound(SysfsPathNotFoundError):
+    def __init__(self, path: str):
+        super().__init__("MDEV path '{}' not found".format(path))
+
+
+class NoPCIDeviceNameError(DevCtlException):
+    def __init__(self, name: str):
         super().__init__("No such PCI device: '{}'".format(name))
         self.name = name
 
 
-class InvalidDeviceDriverPath(DevCtlException):
-    def __init__(self, path):
-        super().__init__("No such device driver path: '{}'".format(path))
-        self.path = path
-
-
-class NoMdevBusPath(DevCtlException):
-    def __init__(self, path):
-        super().__init__("No such MDEV path: '{}'".format(path))
-        self.path = path
-
-
-class InvalidMdevPCIAddress(DevCtlException):
-    def __init__(self, pci_address):
+class NoMdevPCIAddressError(DevCtlException):
+    def __init__(self, pci_address: str):
         super().__init__("No such MDEV PCI address: '{}'".format(pci_address))
         self.pci_address = pci_address
 
 
-class InvalidMdevUUID(DevCtlException):
-    def __init__(self, uuid):
+class NoMdevUUIDError(DevCtlException):
+    def __init__(self, uuid: str):
         super().__init__("No such MDEV UUID: '{}'".format(uuid))
         self.uuid = uuid
 
@@ -64,21 +75,21 @@ class InvalidMdevFileFormat(DevCtlException):
 
 
 # https://stackoverflow.com/questions/9535954/printing-lists-as-tabular-data
-def print_table(table):
+def print_table(table: Sequence):
     longest_cols = [(max([len(str(row[i])) for row in table]) + 3) for i in range(len(table[0]))]
     row_format = "".join(["{:<" + str(longest_col) + "}" for longest_col in longest_cols])
     for row in table:
         print(row_format.format(*row))
 
 
-def each_mdev_device_class_pci_address(path_waiter=None):
+def each_mdev_device_class_pci_address(path_waiter: PathWaiterCB = None):
     if path_waiter:
         path_waiter(MDEV_BUS_CLASS_PATH)
     for pci_address in sorted(os.listdir(MDEV_BUS_CLASS_PATH)):
         yield pci_address
 
 
-def each_supported_mdev_type_and_path(pci_address, path_waiter=None):
+def each_supported_mdev_type_and_path(pci_address, path_waiter: PathWaiterCB = None):
     path = os.path.join(MDEV_BUS_CLASS_PATH, pci_address, "mdev_supported_types")
     if path_waiter:
         path_waiter(path)
@@ -86,14 +97,14 @@ def each_supported_mdev_type_and_path(pci_address, path_waiter=None):
         yield mdev_type, os.path.join(path, mdev_type)
 
 
-def each_mdev_device_uuid(path_waiter=None):
+def each_mdev_device_uuid(path_waiter: PathWaiterCB = None):
     if path_waiter:
         path_waiter(MDEV_BUS_DEVICE_PATH)
     for uuid in sorted(os.listdir(MDEV_BUS_DEVICE_PATH)):
         yield uuid
 
 
-def each_pci_device_and_path(vendor=None, path_waiter=None):
+def each_pci_device_and_path(vendor=None, path_waiter: PathWaiterCB = None):
     if vendor and not vendor.startswith("0x"):
         vendor = "0x" + vendor
 
@@ -119,22 +130,53 @@ def each_pci_device_and_path(vendor=None, path_waiter=None):
         yield dev, dev_path
 
 
-def get_driver_of_device(dev):
-    if not dev:
-        raise InvalidPCIDeviceName(dev)
-    driver_path = "/sys/bus/pci/devices/{}/driver".format(dev)
+def unbind_driver_from_devices(driver: str, devices: Sequence[str], path_waiter: PathWaiterCB = None, dry_run=False):
+    assert driver is not None, "driver should be not None"
+    driver_path = "/sys/bus/pci/drivers/{}".format(driver)
+    if path_waiter:
+        path_waiter(driver_path)
     if not os.path.exists(driver_path):
-        raise InvalidDeviceDriverPath(driver_path)
+        raise DeviceDriverPathNotFound(driver_path)
+    driver_unbind_path = os.path.join(driver_path, "unbind")
+    if path_waiter:
+        path_waiter(driver_unbind_path)
+    if not os.path.exists(driver_unbind_path):
+        raise UnbindDriverPathNotFound(driver_unbind_path)
+    for dev in devices:
+        device_driver_path = os.path.join(driver_path, dev)
+        if path_waiter:
+            path_waiter(device_driver_path)
+        if not os.path.exists(device_driver_path):
+            raise DeviceDriverPathNotFound(device_driver_path)
+        if not dry_run:
+            with open(driver_unbind_path, "w") as f:
+                LOG.info("Unbind driver %s from PCI device %s", driver, dev)
+                print(dev, file=f)
+        else:
+            LOG.info("DRY-RUN: Unbind driver %s from PCI device %s", driver, dev)
+
+
+def get_driver_of_device(dev, path_waiter: PathWaiterCB = None):
+    if not dev:
+        raise NoPCIDeviceNameError(dev)
+    driver_path = "/sys/bus/pci/devices/{}/driver".format(dev)
+    if path_waiter:
+        path_waiter(driver_path)
+    if not os.path.exists(driver_path):
+        raise DeviceDriverPathNotFound(driver_path)
     driver_path = os.path.realpath(driver_path)
     driver_name = os.path.basename(driver_path)
     return driver_name
 
 
-_T = TypeVar("_T")
+def unbind_device_drivers(devices: Sequence[str], path_waiter: PathWaiterCB = None, dry_run=False):
+    for device in devices:
+        device_driver = get_driver_of_device(device, path_waiter=path_waiter)
+        unbind_driver_from_devices(device_driver, [device], path_waiter=path_waiter, dry_run=dry_run)
 
 
 class MdevType:
-    def __init__(self, path, path_waiter=None):
+    def __init__(self, path, path_waiter: PathWaiterCB = None):
         self.path = path
         self.path_waiter = path_waiter
         self.realpath = os.path.realpath(path)
@@ -166,29 +208,37 @@ class MdevType:
         return "MdevType(path={!r})".format(self.path)
 
     def __str__(self):
-        return "<MdevType path={!r} realpath={!r} type={!r} name={!r} description={!r} device_api={!r} " \
-               "available_instances={!r}>".format(self.path, self.realpath, self.type, self.name, self.description,
-                                                  self.device_api, self.available_instances)
+        return (
+            "<MdevType path={!r} realpath={!r} type={!r} name={!r} description={!r} device_api={!r} "
+            "available_instances={!r}>".format(
+                self.path,
+                self.realpath,
+                self.type,
+                self.name,
+                self.description,
+                self.device_api,
+                self.available_instances,
+            )
+        )
 
     @classmethod
-    def from_path(cls: Type[_T], path: str, path_waiter: FunctionType = None) -> _T:
+    def from_path(cls, path: str, path_waiter: PathWaiterCB = None) -> "MdevType":
         return cls(path, path_waiter=path_waiter)
 
 
 class MdevDeviceClass:
-
-    def __init__(self, pci_address, path, path_waiter=None):
+    def __init__(self, pci_address, path, path_waiter: PathWaiterCB = None):
         self.pci_address = pci_address  # PCI address
         self.path = path  # device path
         self.path_waiter = path_waiter
-        self._supported_mdev_types = None  # maps mdev_type to MdevType
+        self._supported_mdev_types: Optional[OrderedDict] = None  # maps mdev_type to MdevType
 
     @property
     def supported_mdev_types(self) -> OrderedDict:
         if self._supported_mdev_types is None:
             self._supported_mdev_types = OrderedDict()
             for mdev_type, mdev_type_path in each_supported_mdev_type_and_path(
-                    self.pci_address, path_waiter=self.path_waiter
+                self.pci_address, path_waiter=self.path_waiter
             ):
                 self._supported_mdev_types[mdev_type] = MdevType.from_path(mdev_type_path, path_waiter=self.path_waiter)
         return self._supported_mdev_types
@@ -202,20 +252,20 @@ class MdevDeviceClass:
         )
 
     @classmethod
-    def from_pci_address(cls, pci_address, path_waiter=None):
+    def from_pci_address(cls, pci_address, path_waiter: PathWaiterCB = None):
         if path_waiter:
             path_waiter(MDEV_BUS_CLASS_PATH)
         if not os.path.exists(MDEV_BUS_CLASS_PATH):
-            raise NoMdevBusPath(MDEV_BUS_CLASS_PATH)
+            raise MdevBusPathNotFound(MDEV_BUS_CLASS_PATH)
         path = os.path.join(MDEV_BUS_CLASS_PATH, pci_address)
         if path_waiter:
             path_waiter(path)
         if not os.path.exists(path):
-            raise InvalidMdevPCIAddress(pci_address)
+            raise NoMdevPCIAddressError(pci_address)
         return cls(pci_address=pci_address, path=path, path_waiter=path_waiter)
 
     @classmethod
-    def from_pci_address_unchecked(cls, pci_address, path_waiter=None):
+    def from_pci_address_unchecked(cls, pci_address, path_waiter: PathWaiterCB = None):
         path = os.path.join(MDEV_BUS_CLASS_PATH, pci_address)
         if path_waiter:
             path_waiter(path)
@@ -270,12 +320,12 @@ class MdevDevice:
     @classmethod
     def from_uuid(cls, uuid):
         if not os.path.exists(MDEV_BUS_DEVICE_PATH):
-            raise NoMdevBusPath(MDEV_BUS_DEVICE_PATH)
-        path = os.path.join(MDEV_BUS_DEVICE_PATH, uuid)
-        if not os.path.exists(path):
-            raise InvalidMdevUUID(uuid)
+            raise MdevBusPathNotFound(MDEV_BUS_DEVICE_PATH)
+        device_path = os.path.join(MDEV_BUS_DEVICE_PATH, uuid)
+        if not os.path.exists(device_path):
+            raise NoMdevUUIDError(uuid)
 
-        return cls(uuid=uuid, path=path)
+        return cls(uuid=uuid, path=device_path)
 
     @classmethod
     def from_uuid_unchecked(cls, uuid):
@@ -319,22 +369,23 @@ class PathWaiter(Waiter):
 
 
 class DevCtl:
-    def __init__(self, wait_for_device=False, num_trials=3, wait_delay=1, debug=False):
+    def __init__(self, wait_for_device=False, num_trials=3, wait_delay=1, dry_run=False, debug=False):
         self.wait_for_device = wait_for_device
         self.num_trials = num_trials
         self.wait_delay = wait_delay
+        self.dry_run = dry_run
         self.debug = debug
         self._mdev_device_classes = None  # maps PCI address to MdevDeviceClass
         self._mdev_devices = None  # maps UUID to MdevDevice
 
-    def wait_for_device_path(self, path):
-        LOG.debug("wait_for_device_path(%r)", path)  # ??? DEBUG
+    def wait_for_device_path(self, device_path):
+        LOG.debug("wait_for_device_path(%r)", device_path)  # ??? DEBUG
         if self.wait_for_device:
-            w = PathWaiter(path, num_trials=self.num_trials, wait_delay=self.wait_delay)
+            w = PathWaiter(device_path, num_trials=self.num_trials, wait_delay=self.wait_delay)
             result = w.wait()
             del w
         else:
-            result = os.path.exists(path)
+            result = os.path.exists(device_path)
         return result
 
     @property
@@ -410,9 +461,9 @@ class DevCtl:
             device_name, device_path = m
             try:
                 driver_name = get_driver_of_device(device_name)
-            except InvalidPCIDeviceName:
+            except NoPCIDeviceNameError:
                 driver_name = "no driver"
-            except InvalidDeviceDriverPath:
+            except DeviceDriverPathNotFound:
                 driver_name = "no driver path"
             pci_devices.append((device_name, driver_name, device_path))
 
@@ -437,7 +488,8 @@ class DevCtl:
                 mdev_reservation = line.split()
                 if len(mdev_reservation) != 3:
                     raise InvalidMdevFileFormat(
-                        "In mdev reservation file should be three components (UUID, PCI address, MDEV type) separated by spaces"
+                        "In mdev reservation file should be three components (UUID, PCI address, MDEV type) separated "
+                        "by spaces "
                     )
                 uuid, pci_address, mdev_type_name = line.split()
                 mdev_device = self.mdev_devices.get(uuid)
@@ -492,8 +544,19 @@ class DevCtl:
                     result = 1
         return result
 
+    def unbind_driver(self, driver=None, devices=None, dry_run=False):
+        if not devices:
+            return
 
-DEV_CTL = None
+        for device in devices:
+            if driver:
+                device_driver = driver
+            else:
+                device_driver = get_driver_of_device(device, path_waiter=self.wait_for_device_path)
+            unbind_driver_from_devices(device_driver, [device], path_waiter=self.wait_for_device_path, dry_run=dry_run)
+
+
+DEV_CTL: Optional[DevCtl] = None
 
 
 def list_pci(args):
@@ -517,11 +580,15 @@ def restore_mdev(args):
     return DEV_CTL.restore_mdev(input_file=args.input_file)
 
 
+def unbind_driver(args):
+    return DEV_CTL.unbind_driver(driver=args.driver, devices=args.devices, dry_run=args.dry_run)
+
+
 def main():
     global DEV_CTL
 
     parser = argparse.ArgumentParser(
-        description="NVIDIA Mdev Manager", formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        description="NVIDIA Device Control", formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument("--debug", help="debug mode", action="store_true")
     parser.add_argument("-w", "--wait", help="wait until mdev bus is available", action="store_true")
@@ -534,29 +601,29 @@ def main():
         help="delay time in seconds between trials if waiting for device",
     )
 
-    def register_list_pci_args(parser):
-        parser.add_argument(
+    def register_list_pci_args(argparser):
+        argparser.add_argument(
             "-p",
             "--pci-address",
             help="show only devices with specified pci addresses",
             action="append",
             dest="pci_addresses",
         )
-        parser.set_defaults(func=list_pci)
+        argparser.set_defaults(func=list_pci)
 
-    def register_list_mdev_args(parser):
-        parser.add_argument("-c", "--classes", help="print mdev device classes", action="store_true")
-        parser.add_argument(
+    def register_list_mdev_args(argparser):
+        argparser.add_argument("-c", "--classes", help="print mdev device classes", action="store_true")
+        argparser.add_argument(
             "-p",
             "--pci-address",
             help="show only devices with specified pci addresses",
             action="append",
             dest="pci_addresses",
         )
-        parser.add_argument(
+        argparser.add_argument(
             "-m", "--mdev-type", help="show only devices with specified mdev types", action="append", dest="mdev_types",
         )
-        parser.set_defaults(func=list_mdev)
+        argparser.set_defaults(func=list_mdev)
 
     parser.set_defaults(subcommand="list-pci")
     register_list_pci_args(parser)
@@ -591,7 +658,18 @@ def main():
         default=sys.stdin,
         dest="input_file",
     )
+    restore_p.add_argument("-n", "--dry-run", help="Do everything except actually make changes", action="store_true")
     restore_p.set_defaults(func=restore_mdev)
+
+    unbind_driver_p = subparsers.add_parser("unbind-driver", help="unbind drivers from devices")
+    unbind_driver_p.add_argument(
+        "-d", "--driver", metavar="DRIVER", help="unbind driver from devices",
+    )
+    unbind_driver_p.add_argument(
+        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true"
+    )
+    unbind_driver_p.add_argument("devices", metavar="PCI_ADDRESS", type=str, nargs="+", help="device PCI address")
+    unbind_driver_p.set_defaults(func=unbind_driver)
 
     args = parser.parse_args()
 
@@ -605,7 +683,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        DEV_CTL = DevCtl(wait_for_device=args.wait, num_trials=args.trials, wait_delay=args.delay)
+        DEV_CTL = DevCtl(wait_for_device=args.wait, num_trials=args.trials, wait_delay=args.delay, debug=args.debug)
     except DevCtlException:
         logging.exception("Cloud not create DevCtl")
         return 1
@@ -613,8 +691,12 @@ def main():
     try:
         result = args.func(args)
     except DevCtlException:
-        logging.exception("Could not execute {} command".format(args.subcommand))
+        LOG.exception("Could not execute %s command", args.subcommand)
         return 1
+    except PermissionError:
+        LOG.exception("Could not execute %s command, try to run this command as root", args.subcommand)
+        return 1
+
     if result is None:
         result = 0
     return result
