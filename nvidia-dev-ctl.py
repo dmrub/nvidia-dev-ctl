@@ -8,6 +8,8 @@ import argparse
 import logging
 import os
 import os.path
+import subprocess
+from subprocess import CalledProcessError
 import sys
 import time
 from collections import OrderedDict
@@ -45,9 +47,19 @@ class DeviceDriverPathNotFound(SysfsPathNotFoundError):
         super().__init__(path, "Device driver path '{}' not found".format(path))
 
 
+class BindDriverPathNotFound(SysfsPathNotFoundError):
+    def __init__(self, path: str):
+        super().__init__(path, "Bind driver path '{}' not found".format(path))
+
+
 class UnbindDriverPathNotFound(SysfsPathNotFoundError):
     def __init__(self, path: str):
         super().__init__(path, "Unbind driver path '{}' not found".format(path))
+
+
+class DriverOverridePathNotFound(SysfsPathNotFoundError):
+    def __init__(self, path: str):
+        super().__init__(path, "Driver override path '{}' not found".format(path))
 
 
 class MdevBusPathNotFound(SysfsPathNotFoundError):
@@ -178,6 +190,48 @@ def unbind_pci_device_drivers(devices: Sequence[str], path_waiter: PathWaiterCB 
     for device in devices:
         device_driver = get_driver_of_pci_device(device, path_waiter=path_waiter)
         unbind_driver_from_pci_devices(device_driver, [device], path_waiter=path_waiter, dry_run=dry_run)
+
+
+def bind_driver_to_pci_devices(driver: str, devices: Sequence[str], path_waiter: PathWaiterCB = None, dry_run=False):
+    assert driver is not None, "driver should be not None"
+    dry_run_prefix = "Dry run: " if dry_run else ""
+    for dev in devices:
+        current_driver = get_driver_of_pci_device(dev)
+        if current_driver == driver:
+            LOG.info("Ignore device %s because it already has driver %s", dev, driver)
+            continue
+
+        driver_override_path = "/sys/bus/pci/devices/{}/driver_override".format(dev)
+        if path_waiter:
+            path_waiter(driver_override_path)
+        if not os.path.exists(driver_override_path):
+            raise DriverOverridePathNotFound(driver_override_path)
+        LOG.info(dry_run_prefix + "Override driver %s for PCI device %s", driver, dev)
+        if not dry_run:
+            with open(driver_override_path, "w") as f:
+                print(driver, file=f)
+        driver_path = "/sys/bus/pci/drivers/{}".format(driver)
+        if not os.path.exists(driver_path):
+            LOG.info(dry_run_prefix + "Driver %s missing, try loading it first", driver)
+            if not dry_run:
+                subprocess.check_call(["modprobe", driver])
+            if driver == "nvidia":
+                if not dry_run:
+                    try:
+                        subprocess.check_call(["modprobe", "nvidia_vgpu_vfio"])
+                    except CalledProcessError:
+                        LOG.exception("Could not load nvidia_vgpu_vfio module")
+            if not dry_run and not os.path.exists(driver_path):
+                raise DeviceDriverPathNotFound(driver_path)
+        LOG.info(dry_run_prefix + "Bind driver %s to device %s", driver, dev)
+        if not dry_run:
+            driver_bind_path = "/sys/bus/pci/drivers/{}/bind".format(driver)
+            if path_waiter:
+                path_waiter(driver_bind_path)
+            if not os.path.exists(driver_bind_path):
+                raise BindDriverPathNotFound(driver_bind_path)
+            with open(driver_bind_path, "w") as f:
+                print(dev, file=f)
 
 
 class MdevType:
@@ -504,7 +558,7 @@ class DevCtl:
                 uuid, pci_address, mdev_type_name = line.split()
                 mdev_device = self.mdev_devices.get(uuid)
                 if mdev_device:
-                    LOG.warning("Mdev device with UUID %s already registred, ignoring", uuid)
+                    LOG.warning("Ignore Mdev device with UUID %s because it is already registered", uuid)
                     continue
                 mdev_device_class = self.mdev_device_classes.get(pci_address)
                 if not mdev_device_class:
@@ -554,6 +608,13 @@ class DevCtl:
                     result = 1
         return result
 
+    def bind_driver(self, driver, devices=None, dry_run=False):
+        assert driver is not None and driver, "driver should be not None and not empty"
+        if not devices:
+            return
+
+        bind_driver_to_pci_devices(driver, devices, path_waiter=self.wait_for_device_path, dry_run=dry_run)
+
     def unbind_driver(self, driver=None, devices=None, ignore_others=False, dry_run=False):
         if not devices:
             return
@@ -600,6 +661,10 @@ def save_mdev(args):
 
 def restore_mdev(args):
     return DEV_CTL.restore_mdev(input_file=args.input_file)
+
+
+def bind_driver(args):
+    return DEV_CTL.bind_driver(driver=args.driver, devices=args.devices, dry_run=args.dry_run)
 
 
 def unbind_driver(args):
@@ -693,6 +758,14 @@ def main():
     )
     restore_p.add_argument("-n", "--dry-run", help="Do everything except actually make changes", action="store_true")
     restore_p.set_defaults(func=restore_mdev)
+
+    bind_driver_p = subparsers.add_parser("bind-driver", help="bind driver to devices")
+    bind_driver_p.add_argument("driver", metavar="DRIVER", help="bind driver to devices")
+    bind_driver_p.add_argument(
+        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true"
+    )
+    bind_driver_p.add_argument("devices", metavar="PCI_ADDRESS", type=str, nargs="+", help="device PCI address")
+    bind_driver_p.set_defaults(func=bind_driver)
 
     unbind_driver_p = subparsers.add_parser("unbind-driver", help="unbind drivers from devices")
     unbind_driver_p.add_argument(
