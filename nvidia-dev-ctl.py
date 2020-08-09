@@ -39,6 +39,8 @@ MDEV_BUS_DEVICE_PATH = "/sys/bus/mdev/devices"
 
 PCI_BUS_DEVICE_PATH = "/sys/bus/pci/devices"
 
+PCI_BUS_DRIVER_PATH = "/sys/bus/pci/drivers"
+
 NVIDIA_VENDOR = "10de"
 
 TEXT_FORMAT = "text"
@@ -103,6 +105,34 @@ class NoMdevUUIDError(DevCtlException):
 
 class InvalidMdevFileFormat(DevCtlException):
     pass
+
+
+def sysfs_pci_device_path(pci_address):
+    return os.path.join(PCI_BUS_DEVICE_PATH, pci_address)
+
+
+def sysfs_pci_driver_path(driver):
+    return os.path.join(PCI_BUS_DRIVER_PATH, driver)
+
+
+def sysfs_mdev_supported_types_path(pci_address):
+    return os.path.join(MDEV_BUS_CLASS_PATH, pci_address, "mdev_supported_types")
+
+
+def sysfs_mdev_type_path(pci_address, mdev_type_name):
+    return os.path.join(sysfs_mdev_supported_types_path(pci_address), mdev_type_name)
+
+
+def sysfs_mdev_path(pci_address, mdev_type_name, mdev_uuid):
+    return os.path.join(
+        sysfs_pci_device_path(pci_address), "mdev_supported_types", mdev_type_name, "devices", mdev_uuid
+    )
+
+
+def sysfs_mdev_remove_path(pci_address, mdev_type_name, mdev_uuid):
+    return os.path.join(
+        sysfs_pci_device_path(pci_address), "mdev_supported_types", mdev_type_name, "devices", mdev_uuid, "remove"
+    )
 
 
 # https://stackoverflow.com/questions/9535954/printing-lists-as-tabular-data
@@ -214,7 +244,7 @@ def bind_driver_to_pci_devices(driver: str, devices: Sequence[str], path_waiter:
     for dev in devices:
         current_driver = get_driver_of_pci_device(dev)
         if current_driver == driver:
-            LOG.info("Ignore device %s because it already has driver %s", dev, driver)
+            LOG.info("Do not change the driver on the device %s, because it already has driver %s", dev, driver)
             continue
 
         driver_override_path = "/sys/bus/pci/devices/{}/driver_override".format(dev)
@@ -255,20 +285,51 @@ class MdevType:
         self.path = path
         self.path_waiter = path_waiter
         self.realpath = os.path.realpath(path)
-        self.type = os.path.basename(self.realpath)
+        path_head, self.type = os.path.split(self.realpath)
+        path_head_1, mdev_suppored_types_sym = os.path.split(path_head)
+        if mdev_suppored_types_sym != "mdev_supported_types":
+            raise DevCtlException("Path {} does not end with 'mdev_supported_types".format(path_head))
+        self.pci_address = os.path.basename(path_head_1)
+        os.path.dirname(self.realpath)
         self.name = None
         self.description = None
         self.device_api = None
-        self.available_instances = None
+        self.available_instances: Optional[int] = None
         self.update()
 
-    def create(self, uuid):
+    def create(self, uuid, dry_run=False):
         create_path = os.path.join(self.path, "create")
         if self.path_waiter:
             self.path_waiter(create_path)
-        with open(create_path, "w") as f:
-            print(uuid, file=f)
-        self.update()
+        dry_run_prefix = "Dry run: " if dry_run else ""
+        LOG.info(
+            dry_run_prefix + "Create mdev device with UUID %s on PCI address %s and with type %s",
+            uuid,
+            self.pci_address,
+            self.type,
+        )
+        if not dry_run:
+            with open(create_path, "w") as f:
+                print(uuid, file=f)
+            self.update()
+        return dry_run or os.path.exists(sysfs_mdev_path(self.pci_address, self.type, uuid))
+
+    def remove(self, uuid, dry_run=False):
+        remove_path = sysfs_mdev_remove_path(self.pci_address, self.type, uuid)
+        if self.path_waiter:
+            self.path_waiter(remove_path)
+        dry_run_prefix = "Dry run: " if dry_run else ""
+        LOG.info(
+            dry_run_prefix + "Remove mdev device with UUID %s on PCI address %s and with type %s",
+            uuid,
+            self.pci_address,
+            self.type,
+        )
+        if not dry_run:
+            with open(remove_path, "w") as f:
+                print("1", file=f)
+            self.update()
+        return dry_run or not os.path.exists(sysfs_mdev_path(self.pci_address, self.type, uuid))
 
     def update(self):
         fields = (("name", str), ("description", str), ("device_api", str), ("available_instances", int))
@@ -306,10 +367,10 @@ class MdevDeviceClass:
         self.pci_address = pci_address  # PCI address
         self.path = path  # device path
         self.path_waiter = path_waiter
-        self._supported_mdev_types: Optional[OrderedDict] = None  # maps mdev_type to MdevType
+        self._supported_mdev_types: Optional[OrderedDict[str, MdevType]] = None  # maps mdev_type to MdevType
 
     @property
-    def supported_mdev_types(self) -> OrderedDict:
+    def supported_mdev_types(self) -> "OrderedDict[str, MdevType]":
         if self._supported_mdev_types is None:
             self._supported_mdev_types = OrderedDict()
             for mdev_type, mdev_type_path in each_supported_mdev_type_and_path(
@@ -450,8 +511,10 @@ class DevCtl:
         self.wait_delay = wait_delay
         self.dry_run = dry_run
         self.debug = debug
-        self._mdev_device_classes = None  # maps PCI address to MdevDeviceClass
-        self._mdev_devices = None  # maps UUID to MdevDevice
+        self._mdev_device_classes: Optional[
+            OrderedDict[str, MdevDeviceClass]
+        ] = None  # maps PCI address to MdevDeviceClass
+        self._mdev_devices: Optional[OrderedDict[str, MdevDevice]] = None  # maps UUID to MdevDevice
 
     def wait_for_device_path(self, device_path):
         LOG.debug("wait_for_device_path(%r)", device_path)  # ??? DEBUG
@@ -468,7 +531,7 @@ class DevCtl:
         return self.wait_for_device
 
     @property
-    def mdev_device_classes(self):
+    def mdev_device_classes(self) -> "OrderedDict[str, MdevDeviceClass]":
         if self._mdev_device_classes is None:
             self._mdev_device_classes = OrderedDict()
             for pci_address in each_mdev_device_class_pci_address(path_waiter=self.wait_for_device_path):
@@ -476,7 +539,7 @@ class DevCtl:
         return self._mdev_device_classes
 
     @property
-    def mdev_devices(self):
+    def mdev_devices(self) -> "OrderedDict[str, MdevDevice]":
         if self._mdev_devices is None:
             self._mdev_devices = OrderedDict()
             for mdev_uuid in each_mdev_device_uuid(path_waiter=self.wait_for_device_path):
@@ -681,7 +744,7 @@ class DevCtl:
             )
             return False
         LOG.info("Found device type %s", mdev_type)
-        if mdev_type.available_instances <= 0:
+        if mdev_type.available_instances is None or mdev_type.available_instances <= 0:
             LOG.error(
                 "Mdev type with name %s does in device class with PCI address %s and path %s has no "
                 "available instances",
@@ -691,33 +754,25 @@ class DevCtl:
             )
             return False
 
-        dry_run_prefix = "Dry run: " if dry_run else ""
-        LOG.info(
-            dry_run_prefix + "Register mdev device with UUID %s on PCI address %s and with type %s",
-            mdev_uuid,
-            pci_address,
-            mdev_type_name,
-        )
-        if not dry_run:
-            try:
-                mdev_type.create(mdev_uuid)
-            except PermissionError:
-                LOG.exception(
-                    "Could not register mdev type %s with device class with PCI address %s and path %s, "
-                    "try to run this command as root",
-                    mdev_type_name,
-                    pci_address,
-                    mdev_device_class.path,
-                )
-                return False
-            except OSError:
-                LOG.exception(
-                    "Could not register mdev type %s with device class with PCI address %s and path %s",
-                    mdev_type_name,
-                    pci_address,
-                    mdev_device_class.path,
-                )
-                return False
+        try:
+            return mdev_type.create(mdev_uuid, dry_run=dry_run)
+        except PermissionError:
+            LOG.exception(
+                "Could not create mdev device of type %s on device with PCI address %s and path %s, "
+                "try to run this command as root",
+                mdev_type_name,
+                pci_address,
+                mdev_device_class.path,
+            )
+            return False
+        except OSError:
+            LOG.exception(
+                "Could not register mdev type %s with device class with PCI address %s and path %s",
+                mdev_type_name,
+                pci_address,
+                mdev_device_class.path,
+            )
+            return False
         return True
 
     def create_mdev(
@@ -740,6 +795,28 @@ class DevCtl:
 
         self.rebind_device_driver(pci_address, driver_name, dry_run=dry_run)
         return self._create_mdev_internal(pci_address, mdev_type_name, mdev_uuid, dry_run=dry_run)
+
+    def remove_mdev(self, mdev_uuid: str, dry_run=False) -> bool:
+        if not mdev_uuid:
+            LOG.error("No mdev UUID is specified")
+            return False
+
+        mdev_device = self.mdev_devices.get(mdev_uuid)
+        if not mdev_device:
+            LOG.error("No mdev device with the UUID %s", mdev_uuid)
+            return False
+
+        try:
+            return mdev_device.mdev_type.remove(mdev_uuid, dry_run=dry_run)
+        except PermissionError:
+            LOG.exception(
+                "Could not remove mdev device with UUID %s, type %s and PCI address %s, "
+                "try to run this command as root",
+                mdev_uuid,
+                mdev_device.mdev_type.type,
+                mdev_device.pci_address,
+            )
+            return False
 
 
 DEV_CTL: Optional[DevCtl] = None
@@ -783,6 +860,13 @@ def create_mdev(args):
     if DEV_CTL.create_mdev(
         pci_address=args.pci_address, mdev_type_name=args.mdev_type, mdev_uuid=args.mdev_uuid, dry_run=args.dry_run
     ):
+        return 0
+    else:
+        return 1
+
+
+def remove_mdev(args):
+    if DEV_CTL.remove_mdev(mdev_uuid=args.mdev_uuid, dry_run=args.dry_run):
         return 0
     else:
         return 1
@@ -859,12 +943,19 @@ def main():
         "--uuid",
         metavar="UUID",
         dest="mdev_uuid",
-        help="MDEV UUID of the mdev device, if not specified a new will be automatically generated",
+        help="UUID of the mdev device, if not specified a new will be automatically generated",
     )
     create_mdev_p.add_argument(
         "-n", "--dry-run", help="Do everything except actually make changes", action="store_true"
     )
     create_mdev_p.set_defaults(func=create_mdev)
+
+    remove_mdev_p = subparsers.add_parser("remove-mdev", help="remove mdev device")
+    remove_mdev_p.add_argument("mdev_uuid", metavar="UUID", help="UUID of the mdev device to remove")
+    remove_mdev_p.add_argument(
+        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true"
+    )
+    remove_mdev_p.set_defaults(func=remove_mdev)
 
     save_p = subparsers.add_parser("save", help="dump registered mdev devices")
     save_p.add_argument(
