@@ -143,7 +143,7 @@ bind-driver-to-devices() {
             echo >&2 "Driver $driver missing, no path /sys/bus/pci/drivers/$driver"
             return 1
         fi
-        echo "$dev" > "/sys/bus/pci/drivers/$driver/bind"
+        { echo "$dev" > "/sys/bus/pci/drivers/$driver/bind" || true; } 2>/dev/null;
     done
     # if [[ "$driver" = "nvidia" ]]; then
     #    systemctl restart nvidia-vgpud.service
@@ -203,6 +203,23 @@ is-driver-loaded() {
     # https://stackoverflow.com/questions/19120263/why-exit-code-141-with-grep-q
     set +o pipefail
     if lsmod | grep -Eq "^$1 "; then
+        set -o pipefail
+        return 0
+    fi
+    return 1
+}
+
+# $1 pci address
+is-gpu-failed() {
+    local driver
+    # disabling pipefail required because grep will stop after first match
+    # https://stackoverflow.com/questions/19120263/why-exit-code-141-with-grep-q
+    driver=$(get-driver-of-device "$1")
+    if [[ "$driver" != "nvidia" ]]; then
+        return 1
+    fi
+    set +o pipefail
+    if sudo lspci -n -s "$1" -vv | grep -q "Latency Tolerance Reporting"; then
         set -o pipefail
         return 0
     fi
@@ -347,7 +364,6 @@ fix-nvidia-mdev-2() {
     check-nvidia-mdev $gpus
 }
 
-
 fix-nvidia-mdev-3() {
     local gpus failed_devices
     gpus=$(get-nvidia-pci-devices)
@@ -377,11 +393,10 @@ fix-nvidia-mdev-3() {
     if ! restart-nvidia-services; then
         return 1
     fi
-    sleep 10
+    sleep 15
     # shellcheck disable=SC2086
-    check-nvidia-mdev $gpus
+    is-nvidia-mdev-ok $gpus
 }
-
 
 print-drivers() {
     local gpus dev driver
@@ -407,7 +422,7 @@ rebind-devices-to-nvidia() {
     fi
 
     for dev in $gpus; do
-        driver=$(get-driver-of-device "$dev")
+        driver=$(get-driver-of-device "$dev" 2>/dev/null)
         if [[ "$driver" != "nvidia" && -n "$driver" ]]; then
             unbind-driver-from-devices "$driver" "$dev"
             sleep 1
