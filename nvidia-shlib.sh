@@ -83,6 +83,25 @@ remove-devices() {
     done
 }
 
+# $1 ... - devices
+reset-devices() {
+    local dev
+    for dev in "$@"; do
+        if [[ -e "/sys/bus/pci/devices/$dev" && -e "/sys/bus/pci/devices/$dev/reset" ]]; then
+            unbind-device-drivers "$dev"
+            if driver=$(get-driver-of-device "$dev"); then
+                echo >&2 "remove-devices: Could not remove driver $driver from device $dev"
+                continue
+            fi
+            echo "1" > "/sys/bus/pci/devices/$dev/reset"
+            echo >&2 "remove-devices: Reset device $dev"
+        else
+            echo >&2 "remove-devices: No path /sys/bus/pci/devices/$dev or /sys/bus/pci/devices/$dev/reset"
+            return 1
+        fi
+    done
+}
+
 # $1 - device
 get-driver-of-device() {
     local dev driver_path
@@ -96,12 +115,12 @@ get-driver-of-device() {
         return 1
     fi
     driver_path=$(readlink -f "/sys/bus/pci/devices/$dev/driver")
-    echo "$(basename -- "$driver_path")"
+    basename -- "$driver_path"
 }
 
 # $1     - driver
 # $2 ... - PCI device ID
-bind-driver-to-device() {
+bind-driver-to-devices() {
     local driver dev driver_override_path
     driver=$1
     shift
@@ -111,6 +130,7 @@ bind-driver-to-device() {
             echo >&2 "Missing driver_override interface: $driver_override_path"
             continue
         fi
+        echo >&2 "bind-driver-to-devices: Bind driver $driver to device $dev"
         echo "$driver" > "$driver_override_path"
         if [[ ! -e "/sys/bus/pci/drivers/$driver" ]]; then
             echo >&2 "Driver $driver missing, try loading it first"
@@ -189,6 +209,10 @@ is-driver-loaded() {
     return 1
 }
 
+get-failed-nvidia-pci-devices() {
+    dmesg -T | sed -E -e  '/RmInitAdapter failed!/!d; s/^.*NVRM: GPU ([[:alnum:]]{4}:[[:alnum:]]{2}:[[:alnum:]]{2}.[[:alnum:]]).*$/\1/g' | sort -u
+}
+
 is-nvidia-mdev-ok() {
     local do_fix gpus d g
     if ! is-driver-loaded nvidia; then
@@ -206,6 +230,7 @@ is-nvidia-mdev-ok() {
         echo >&2 "is-nvidia-mdev-ok: Fatal error: no NVIDIA PCI devices specified or detected"
         return 1
     fi
+    # shellcheck disable=SC2086
     if check-nvidia-mdev $gpus; then
         echo >&2 "is-nvidia-mdev-ok: All mdev_bus devices present, nothing to fix"
         return 0
@@ -243,6 +268,10 @@ unload-nvidia-drivers() {
     return 0
 }
 
+rescan-pci-bus() {
+    echo "1" > /sys/bus/pci/rescan
+}
+
 # $1 ... - PCI device IDs
 fix-nvidia-mdev() {
     local do_fix gpus d g
@@ -255,6 +284,7 @@ fix-nvidia-mdev() {
         echo >&2 "fix-nvidia-mdev: Fatal error: no NVIDIA PCI devices specified or detected"
         return 1
     fi
+    # shellcheck disable=SC2086
     if is-nvidia-mdev-ok $gpus; then
         return 0
     fi
@@ -287,17 +317,21 @@ fix-nvidia-mdev() {
         return 1
     fi
     sleep 10
-    check-nvidia-mdev $gpus
+    # shellcheck disable=SC2086
+    is-nvidia-mdev-ok $gpus
 }
 
 fix-nvidia-mdev-2() {
     local gpus
+    # shellcheck disable=SC2086
     if is-nvidia-mdev-ok $gpus; then
         return 0
     fi
     gpus=$(get-nvidia-pci-devices)
+    # shellcheck disable=SC2086
     unbind-device-drivers $gpus
     unload-nvidia-drivers
+    # shellcheck disable=SC2086
     remove-devices $gpus
     unload-nvidia-drivers
     echo >&2 "fix-nvidia-mdev-2: rescan PCI bus"
@@ -309,8 +343,45 @@ fix-nvidia-mdev-2() {
         return 1
     fi
     sleep 10
+    # shellcheck disable=SC2086
     check-nvidia-mdev $gpus
 }
+
+
+fix-nvidia-mdev-3() {
+    local gpus failed_devices
+    gpus=$(get-nvidia-pci-devices)
+    # shellcheck disable=SC2086
+    rebind-devices-to-nvidia $gpus
+    # shellcheck disable=SC2086
+    if is-nvidia-mdev-ok $gpus; then
+        return 0
+    fi
+    echo >&2 "fix-nvidia-mdev-3: run nvidia-smi for driver initialization"
+    nvidia-smi
+    failed_devices=$(get-failed-nvidia-pci-devices)
+    if [[ -n "$failed_devices" ]]; then
+        # we have an error and need to fix
+        echo >&2 "fix-nvidia-mdev-3: reset failed NVIDIA devices: $failed_devices"
+        # shellcheck disable=SC2086
+        reset-devices $failed_devices
+        echo >&2 "fix-nvidia-mdev-3: rebind failed NVIDIA devices: $failed_devices"
+        # shellcheck disable=SC2086
+        rebind-devices-to-nvidia $failed_devices
+        echo >&2 "fix-nvidia-mdev-3: run nvidia-smi for driver initialization"
+        nvidia-smi
+        echo >&2 "fix-nvidia-mdev-3: waiting for 15 seconds..."
+        sleep 15
+    fi
+
+    if ! restart-nvidia-services; then
+        return 1
+    fi
+    sleep 10
+    # shellcheck disable=SC2086
+    check-nvidia-mdev $gpus
+}
+
 
 print-drivers() {
     local gpus dev driver
@@ -320,7 +391,9 @@ print-drivers() {
         gpus=$(get-nvidia-pci-devices)
     fi
     for dev in $gpus; do
-        driver=$(get-driver-of-device "$dev")
+        if ! driver=$(get-driver-of-device "$dev" 2>/dev/null); then
+            driver="no driver"
+        fi
         echo "$dev   $driver"
     done
 }
@@ -335,17 +408,18 @@ rebind-devices-to-nvidia() {
 
     for dev in $gpus; do
         driver=$(get-driver-of-device "$dev")
-        if [[ "$driver" != "nvidia" ]]; then
+        if [[ "$driver" != "nvidia" && -n "$driver" ]]; then
             unbind-driver-from-devices "$driver" "$dev"
+            sleep 1
         fi
-        bind-driver-to-device nvidia "$dev"
+        bind-driver-to-devices nvidia "$dev"
     done
 }
 
 # # Unbind PCI passtrough
 # GPUS=$(get-nvidia-pci-devices)
 # unbind-driver-from-devices vfio-pci $GPUS
-# bind-driver-to-device nvidia $GPUS
+# bind-driver-to-devices nvidia $GPUS
 #
 #
 # # After reboot and
