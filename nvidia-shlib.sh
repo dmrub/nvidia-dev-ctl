@@ -5,6 +5,7 @@
 #
 # Documentation
 # https://cubiclenate.com/2019/10/31/power-cycling-pcie-devices-from-the-command-line/
+# https://nvidia.custhelp.com/app/answers/detail/a_id/3751/~/useful-nvidia-smi-queries
 
 rtrim() {
     echo -n "${1%"${1##*[![:space:]]}"}"
@@ -210,7 +211,24 @@ is-driver-loaded() {
 }
 
 # $1 pci address
-is-gpu-failed() {
+is-gpu-ok-adhoc() {
+    local driver
+    driver=$(get-driver-of-device "$1")
+    if [[ "$driver" != "nvidia" ]]; then
+        return 1
+    fi
+    # disabling pipefail required because grep will stop after first match
+    # https://stackoverflow.com/questions/19120263/why-exit-code-141-with-grep-q
+    set +o pipefail
+    if sudo lspci -n -s "$1" -vv | grep -q "Latency Tolerance Reporting"; then
+        set -o pipefail
+        return 1
+    fi
+    return 0
+}
+
+# $1 pci address
+is-gpu-ok() {
     local driver
     # disabling pipefail required because grep will stop after first match
     # https://stackoverflow.com/questions/19120263/why-exit-code-141-with-grep-q
@@ -218,12 +236,7 @@ is-gpu-failed() {
     if [[ "$driver" != "nvidia" ]]; then
         return 1
     fi
-    set +o pipefail
-    if sudo lspci -n -s "$1" -vv | grep -q "Latency Tolerance Reporting"; then
-        set -o pipefail
-        return 0
-    fi
-    return 1
+    nvidia-smi --query-gpu=pci.bus_id,vbios_version -i "$1" --format=csv,noheader &>/dev/null
 }
 
 get-failed-nvidia-pci-devices() {
@@ -460,4 +473,8 @@ rebind-devices-to-nvidia() {
 enable-pci-passtrough() {
     echo 'options vfio-pci ids=10de:1db6' > /etc/modprobe.d/vfio.conf
     echo 'vfio-pci' > /etc/modules-load.d/vfio-pci.conf
+}
+
+disable-pci-passtrough() {
+    rm -f /etc/modprobe.d/vfio.conf /etc/modules-load.d/vfio-pci.conf
 }
