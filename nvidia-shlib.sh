@@ -18,6 +18,11 @@ trim() {
     echo -n "$var"
 }
 
+# https://stackoverflow.com/questions/1527049/how-can-i-join-elements-of-an-array-in-bash
+join-by() {
+    local d=$1; shift; local f=$1; shift; printf %s "$f" "${@/#/$d}"
+}
+
 get-nvidia-pci-devices() {
     local dev vendor
     for dev in /sys/bus/pci/devices/*; do
@@ -239,14 +244,43 @@ is-gpu-ok() {
     nvidia-smi --query-gpu=pci.bus_id,vbios_version -i "$1" --format=csv,noheader &>/dev/null
 }
 
-get-failed-nvidia-pci-devices() {
+get-all-failed-nvidia-pci-devices() {
     dmesg -T | sed -E -e  '/RmInitAdapter failed!/!d; s/^.*NVRM: GPU ([[:alnum:]]{4}:[[:alnum:]]{2}:[[:alnum:]]{2}.[[:alnum:]]).*$/\1/g' | sort -u
 }
 
+LAST_FAILED_DEVICES_FILE=/tmp/last-failed-nvidia-devices-$(id -un).txt
+rm -f "$LAST_FAILED_DEVICES_FILE"
+
+# shellcheck disable=SC2120
+get-last-failed-nvidia-pci-devices() {
+    local failed_devices skip_num_failed_devices
+    declare -a failed_devices_array last_failed_devices_array
+    failed_devices=$(dmesg | sed -E -e  '/RmInitAdapter failed!/!d; s/^.*NVRM: GPU ([[:alnum:]]{4}:[[:alnum:]]{2}:[[:alnum:]]{2}.[[:alnum:]]).*$/\1/g')
+    IFS=$'\n' read -rd '' -a failed_devices_array <<<"$failed_devices"
+    if [[ -e "$LAST_FAILED_DEVICES_FILE" ]]; then
+        IFS=$'\n' read -rd '' -a last_failed_devices_array < "$LAST_FAILED_DEVICES_FILE"
+        skip_num_failed_devices=${#last_failed_devices_array[@]}
+    else
+        skip_num_failed_devices=0
+    fi
+    if [[ "$1" != "--forget-last" ]]; then
+        printf "%s" "$failed_devices" > "$LAST_FAILED_DEVICES_FILE"
+    fi
+    if [[ -n "$skip_num_failed_devices" && "$skip_num_failed_devices" -gt 0 ]]; then
+        failed_devices=$(join-by $'\n' "${failed_devices_array[@]:$skip_num_failed_devices}")
+        # failed_devices=$(sed "1,${SKIP_NUM_FAILED_DEVICES}d" <<<"$failed_devices")
+        # IFS=$'\n' read -rd '' -a failed_array <<<"$failed"
+        # num_failed=${#failed_array[@]}
+    fi
+    if [[ -n "$failed_devices" ]]; then
+        sort -u <<<"$failed_devices" | tr '\n' ' '
+    fi
+}
+
 is-nvidia-mdev-ok() {
-    local do_fix gpus d g
+    local do_fix gpus driver
     if ! is-driver-loaded nvidia; then
-        echo >&2 "is-nvidia-mdev-ok: Module nvidia is not loaded, nothing to fix"
+        echo >&2 "is-nvidia-mdev-ok: Module nvidia is not loaded, nothing to check"
         return 0
     else
         echo >&2 "is-nvidia-mdev-ok: Module nvidia is loaded, check if everything is ok"
@@ -258,7 +292,7 @@ is-nvidia-mdev-ok() {
     fi
     if [[ -z "$gpus" ]]; then
         echo >&2 "is-nvidia-mdev-ok: Fatal error: no NVIDIA PCI devices specified or detected"
-        return 1
+        return 2
     fi
     # shellcheck disable=SC2086
     if check-nvidia-mdev $gpus; then
@@ -268,6 +302,13 @@ is-nvidia-mdev-ok() {
         do_fix=true
         echo >&2 "is-nvidia-mdev-ok: Some mdev_bus devices missing"
     fi
+    #for gpu in $gpus; do
+    #    driver=$(get-driver-of-device "$gpu")
+    #    if [[ "$driver" = "nvidia" ]] && ! is-gpu-ok "$gpu"; then
+    #        echo >&2 "is-nvidia-mdev-ok: GPU $gpu reports failure"
+    #        do_fix=true
+    #    fi
+    #done
     set +o pipefail
     if dmesg | grep -q "RmInitAdapter failed"; then
         set -o pipefail
@@ -386,10 +427,13 @@ fix-nvidia-mdev-3() {
     if is-nvidia-mdev-ok $gpus; then
         return 0
     fi
+    failed_devices=$(get-last-failed-nvidia-pci-devices)
+    echo >&2 "fix-nvidia-mdev-3: failed NVIDIA devices: $failed_devices"
     echo >&2 "fix-nvidia-mdev-3: run nvidia-smi for driver initialization"
     nvidia-smi
-    failed_devices=$(get-failed-nvidia-pci-devices)
+    failed_devices=$(get-last-failed-nvidia-pci-devices)
     if [[ -n "$failed_devices" ]]; then
+        echo >&2 "fix-nvidia-mdev-3: failed NVIDIA devices after nvidia-smi: $failed_devices"
         # we have an error and need to fix
         echo >&2 "fix-nvidia-mdev-3: reset failed NVIDIA devices: $failed_devices"
         # shellcheck disable=SC2086
@@ -399,14 +443,33 @@ fix-nvidia-mdev-3() {
         rebind-devices-to-nvidia $failed_devices
         echo >&2 "fix-nvidia-mdev-3: run nvidia-smi for driver initialization"
         nvidia-smi
+        failed_devices=$(get-last-failed-nvidia-pci-devices)
+        if [[ -n "$failed_devices" ]]; then
+            echo >&2 "fix-nvidia-mdev-3: failed NVIDIA devices after nvidia-smi: $failed_devices"
+        else
+            echo >&2 "fix-nvidia-mdev-3: no failed NVIDIA devices after nvidia-smi !"
+        fi
         echo >&2 "fix-nvidia-mdev-3: waiting for 15 seconds..."
         sleep 15
+        failed_devices=$(get-last-failed-nvidia-pci-devices)
+        if [[ -n "$failed_devices" ]]; then
+            echo >&2 "fix-nvidia-mdev-3: failed NVIDIA devices after waiting: $failed_devices"
+        else
+            echo >&2 "fix-nvidia-mdev-3: no failed NVIDIA devices after waiting !"
+        fi
     fi
 
+    echo >&2 "fix-nvidia-mdev-3: restart NVIDIA services"
     if ! restart-nvidia-services; then
         return 1
     fi
-    sleep 15
+    for ((i = 1 ; i <= 30; i++)); do
+        # shellcheck disable=SC2086
+        if is-nvidia-mdev-ok $gpus; then
+            return 0
+        fi
+        sleep 2
+    done
     # shellcheck disable=SC2086
     is-nvidia-mdev-ok $gpus
 }
