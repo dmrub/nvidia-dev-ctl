@@ -861,7 +861,7 @@ class DevCtl:
         LOG.info("Found device type %s", mdev_type)
         if mdev_type.available_instances is None or mdev_type.available_instances <= 0:
             LOG.error(
-                "Mdev type with name %s does in device class with PCI address %s and path %s has no "
+                "Mdev type with name %s in device class with PCI address %s and path %s has no "
                 "available instances",
                 mdev_type_name,
                 pci_address,
