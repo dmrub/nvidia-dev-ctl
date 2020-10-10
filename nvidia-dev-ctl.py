@@ -861,8 +861,7 @@ class DevCtl:
         LOG.info("Found device type %s", mdev_type)
         if mdev_type.available_instances is None or mdev_type.available_instances <= 0:
             LOG.error(
-                "Mdev type with name %s in device class with PCI address %s and path %s has no "
-                "available instances",
+                "Mdev type with name %s in device class with PCI address %s and path %s has no " "available instances",
                 mdev_type_name,
                 pci_address,
                 mdev_device_class.path,
@@ -896,20 +895,22 @@ class DevCtl:
         driver_name: str = "nvidia",
         mdev_uuid: Optional[str] = None,
         dry_run=False,
-    ) -> bool:
+    ) -> Optional[str]:
         if not pci_address:
             LOG.error("No PCI address is specified")
-            return False
+            return None
         if not mdev_type_name:
             LOG.error("No mdev UUID is specified")
-            return False
+            return None
 
         if not mdev_uuid:
             mdev_uuid = str(uuid.uuid4())
 
         self.rebind_device_driver(pci_address, driver_name, dry_run=dry_run)
-        a = self._create_mdev_internal(pci_address, mdev_type_name, mdev_uuid, dry_run=dry_run)
-        return a
+        if self._create_mdev_internal(pci_address, mdev_type_name, mdev_uuid, dry_run=dry_run):
+            return mdev_uuid
+        else:
+            return None
 
     def remove_mdev(self, mdev_uuid: str, dry_run=False) -> bool:
         if not mdev_uuid:
@@ -987,9 +988,11 @@ def unbind_driver(args):
 
 
 def create_mdev(args):
-    if DEV_CTL.create_mdev(
+    mdev_uuid = DEV_CTL.create_mdev(
         pci_address=args.pci_address, mdev_type_name=args.mdev_type, mdev_uuid=args.mdev_uuid, dry_run=args.dry_run,
-    ):
+    )
+    if mdev_uuid:
+        print(mdev_uuid)
         return 0
     else:
         return 1
