@@ -184,7 +184,7 @@ def load_driver(driver_name, dry_run=False):
 
 # https://stackoverflow.com/questions/9535954/printing-lists-as-tabular-data
 def print_table(table: Sequence):
-    longest_cols = [(max([len(str(row[i])) for row in table]) + 3) for i in range(len(table[0]))]
+    longest_cols = [(max([len(str(row[i])) for row in table]) + 1) for i in range(len(table[0]))]
     row_format = "".join(["{:<" + str(longest_col) + "}" for longest_col in longest_cols])
     for row in table:
         print(row_format.format(*row))
@@ -301,7 +301,9 @@ def bind_driver_to_pci_devices(
             dev, empty_driver_name_if_no_driver=True, path_waiter=path_waiter
         )
         if current_driver_name == driver_name:
-            LOG.info("Do not change the driver on the device %s, because it already has driver %s", dev, driver_name)
+            LOG.info(
+                "Do not change the driver on the device %s, because it already has driver %s", dev, driver_name,
+            )
             continue
         if current_driver_name != "":
             # unbind driver first
@@ -390,7 +392,12 @@ class MdevType:
         return dry_run or not os.path.exists(sysfs_mdev_path(self.pci_address, self.type, uuid))
 
     def update(self):
-        fields = (("name", str), ("description", str), ("device_api", str), ("available_instances", int))
+        fields = (
+            ("name", str),
+            ("description", str),
+            ("device_api", str),
+            ("available_instances", int),
+        )
         for field_name, field_type in fields:
             field_path = os.path.join(self.path, field_name)
             if self.path_waiter:
@@ -604,9 +611,17 @@ class DevCtl:
                 self._mdev_devices[mdev_uuid] = MdevDevice.from_uuid_unchecked(mdev_uuid)
         return self._mdev_devices
 
-    def print_mdev_device_classes(self, pci_addresses_filter, mdev_types_filter):
+    def print_mdev_device_classes(self, pci_addresses_filter, mdev_types_filter, output_all_columns=False):
+        def column_filter(row):
+            if output_all_columns:
+                return row
+            else:
+                return (row[0], row[1], row[2], row[3])
+
         mdev_types = [
-            ("PCI ADDRESS", "MDEV TYPE", "NAME", "AVAILABLE INSTANCES", "DESCRIPTION", "MDEV DEVICE CLASS PATH")
+            column_filter(
+                ("PCI_ADDRESS", "MDEV_TYPE", "NAME", "AVAILABLE_INSTANCES", "DESCRIPTION", "MDEV_DEVICE_CLASS_PATH",)
+            )
         ]
         for mdev_device_class in self.mdev_device_classes.values():
             if pci_addresses_filter and mdev_device_class.pci_address not in pci_addresses_filter:
@@ -615,21 +630,31 @@ class DevCtl:
             for mdev_type in mdev_device_class.supported_mdev_types.values():
                 if not mdev_types_filter or mdev_type.type in mdev_types_filter:
                     mdev_types.append(
-                        (
-                            mdev_device_class.pci_address,
-                            mdev_type.type,
-                            mdev_type.name,
-                            mdev_type.available_instances,
-                            mdev_type.description,
-                            mdev_device_class.path,
+                        column_filter(
+                            (
+                                mdev_device_class.pci_address,
+                                mdev_type.type,
+                                mdev_type.name,
+                                mdev_type.available_instances,
+                                mdev_type.description,
+                                mdev_device_class.path,
+                            )
                         )
                     )
 
         print_table(mdev_types)
 
-    def print_mdev_devices(self, pci_addresses_filter, mdev_types_filter):
+    def print_mdev_devices(self, pci_addresses_filter, mdev_types_filter, output_all_columns=False):
+        def column_filter(row):
+            if output_all_columns:
+                return row
+            else:
+                return (row[0], row[1], row[2], row[3], row[6])
+
         mdev_devices = [
-            ("MDEV DEVICE UUID", "PCI ADDRESS", "TYPE", "NAME", "AVAILABLE INSTANCES", "DESCRIPTION", "VM NAME")
+            column_filter(
+                ("MDEV_DEVICE_UUID", "PCI_ADDRESS", "TYPE", "NAME", "AVAILABLE_INSTANCES", "DESCRIPTION", "VM_NAME",)
+            )
         ]
         for mdev_device in self.mdev_devices.values():
             if pci_addresses_filter and mdev_device.pci_address not in pci_addresses_filter:
@@ -638,21 +663,23 @@ class DevCtl:
                 continue
 
             mdev_devices.append(
-                (
-                    mdev_device.uuid,
-                    mdev_device.pci_address,
-                    mdev_device.mdev_type.type,
-                    mdev_device.mdev_type.name,
-                    mdev_device.mdev_type.available_instances,
-                    mdev_device.mdev_type.description,
-                    mdev_device.nvidia.vm_name if mdev_device.nvidia else "none",
+                column_filter(
+                    (
+                        mdev_device.uuid,
+                        mdev_device.pci_address,
+                        mdev_device.mdev_type.type,
+                        mdev_device.mdev_type.name,
+                        mdev_device.mdev_type.available_instances,
+                        mdev_device.mdev_type.description,
+                        mdev_device.nvidia.vm_name if mdev_device.nvidia else "none",
+                    )
                 )
             )
 
         print_table(mdev_devices)
 
     def print_pci_devices(self, pci_addresses_filter, output_format=TEXT_FORMAT):
-        pci_devices = [("PCI ADDRESS", "DEVICE DRIVER", "PCI DEVICE PATH")]
+        pci_devices = [("PCI_ADDRESS", "DEVICE_DRIVER", "PCI_DEVICE_PATH")]
         for pci_address, device_path in each_pci_device_address_and_path(
             vendor=NVIDIA_VENDOR, path_waiter=self.wait_for_device_path
         ):
@@ -697,7 +724,7 @@ class DevCtl:
                 for mdev_device in mdev_devices:
                     output_file.write(
                         "{}\t{}\t{}\t{}\n".format(
-                            pci_address, driver_name, mdev_device.uuid, mdev_device.mdev_type.type
+                            pci_address, driver_name, mdev_device.uuid, mdev_device.mdev_type.type,
                         )
                     )
                 del mdev_devices_by_pci_address[pci_address]
@@ -732,7 +759,12 @@ class DevCtl:
                 line = line[:comment_pos]
             if line:
                 device_config = line.split()
-                pci_address, driver_name, mdev_uuid, mdev_type_name = None, None, None, None
+                pci_address, driver_name, mdev_uuid, mdev_type_name = (
+                    None,
+                    None,
+                    None,
+                    None,
+                )
                 if len(device_config) == 2:
                     pci_address, driver_name = device_config
                 elif len(device_config) == 4:
@@ -758,7 +790,9 @@ class DevCtl:
 
         return bind_driver_to_pci_devices(driver, devices, path_waiter=self.wait_for_device_path, dry_run=dry_run)
 
-    def unbind_driver(self, driver=None, devices: Optional[Sequence[str]] = None, ignore_others=False, dry_run=False):
+    def unbind_driver(
+        self, driver=None, devices: Optional[Sequence[str]] = None, ignore_others=False, dry_run=False,
+    ):
         if not devices:
             return False
 
@@ -778,7 +812,7 @@ class DevCtl:
             else:
                 device_driver = get_driver_of_pci_device(device, path_waiter=self.wait_for_device_path)
             unbind_driver_from_pci_devices(
-                device_driver, [device], path_waiter=self.wait_for_device_path, dry_run=dry_run
+                device_driver, [device], path_waiter=self.wait_for_device_path, dry_run=dry_run,
             )
         return True
 
@@ -806,7 +840,9 @@ class DevCtl:
 
         mdev_device = self.mdev_devices.get(mdev_uuid)
         if mdev_device:
-            LOG.warning("Ignore Mdev device with UUID %s because it is already registered", mdev_uuid)
+            LOG.warning(
+                "Ignore Mdev device with UUID %s because it is already registered", mdev_uuid,
+            )
             return True
         mdev_device_class = self.mdev_device_classes.get(pci_address)
         if not mdev_device_class:
@@ -909,10 +945,16 @@ def list_pci(args):
 def list_mdev(args):
     if args.classes:
         return DEV_CTL.print_mdev_device_classes(
-            pci_addresses_filter=args.pci_addresses, mdev_types_filter=args.mdev_types
+            pci_addresses_filter=args.pci_addresses,
+            mdev_types_filter=args.mdev_types,
+            output_all_columns=args.output_all,
         )
     else:
-        return DEV_CTL.print_mdev_devices(pci_addresses_filter=args.pci_addresses, mdev_types_filter=args.mdev_types)
+        return DEV_CTL.print_mdev_devices(
+            pci_addresses_filter=args.pci_addresses,
+            mdev_types_filter=args.mdev_types,
+            output_all_columns=args.output_all,
+        )
 
 
 def save_config(args):
@@ -938,7 +980,7 @@ def bind_driver(args):
 
 def unbind_driver(args):
     if DEV_CTL.unbind_driver(
-        driver=args.driver, devices=args.devices, ignore_others=args.ignore_others, dry_run=args.dry_run
+        driver=args.driver, devices=args.devices, ignore_others=args.ignore_others, dry_run=args.dry_run,
     ):
         return 0
     else:
@@ -947,7 +989,7 @@ def unbind_driver(args):
 
 def create_mdev(args):
     if DEV_CTL.create_mdev(
-        pci_address=args.pci_address, mdev_type_name=args.mdev_type, mdev_uuid=args.mdev_uuid, dry_run=args.dry_run
+        pci_address=args.pci_address, mdev_type_name=args.mdev_type, mdev_uuid=args.mdev_uuid, dry_run=args.dry_run,
     ):
         return 0
     else:
@@ -973,11 +1015,13 @@ def main():
     global DEV_CTL
 
     parser = argparse.ArgumentParser(
-        description="NVIDIA Device Control", formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        description="NVIDIA Device Control", formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--debug", help="debug mode", action="store_true")
     parser.add_argument("-w", "--wait", help="wait until mdev bus is available", action="store_true")
-    parser.add_argument("--trials", type=int, default=3, metavar="N", help="number of trials if waiting for device")
+    parser.add_argument(
+        "--trials", type=int, default=3, metavar="N", help="number of trials if waiting for device",
+    )
     parser.add_argument(
         "--delay",
         type=int,
@@ -1017,6 +1061,7 @@ def main():
         argparser.add_argument(
             "-m", "--mdev-type", help="show only devices with specified mdev types", action="append", dest="mdev_types",
         )
+        argparser.add_argument("-O", "--output-all", help="output all columns", action="store_true")
         argparser.set_defaults(func=list_mdev)
 
     parser.set_defaults(subcommand="list-pci")
@@ -1043,14 +1088,14 @@ def main():
         help="UUID of the mdev device, if not specified a new will be automatically generated",
     )
     create_mdev_p.add_argument(
-        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true"
+        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
     )
     create_mdev_p.set_defaults(func=create_mdev)
 
     remove_mdev_p = subparsers.add_parser("remove-mdev", help="remove mdev device")
     remove_mdev_p.add_argument("mdev_uuid", metavar="UUID", help="UUID of the mdev device to remove")
     remove_mdev_p.add_argument(
-        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true"
+        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
     )
     remove_mdev_p.set_defaults(func=remove_mdev)
 
@@ -1076,33 +1121,38 @@ def main():
         default=sys.stdin,
         dest="input_file",
     )
-    restore_p.add_argument("-n", "--dry-run", help="Do everything except actually make changes", action="store_true")
+    restore_p.add_argument(
+        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
+    )
     restore_p.set_defaults(func=restore_config)
 
     bind_driver_p = subparsers.add_parser("bind-driver", help="bind driver to devices")
     bind_driver_p.add_argument("driver", metavar="DRIVER", help="bind driver to devices")
     bind_driver_p.add_argument(
-        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true"
+        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
     )
     bind_driver_p.add_argument("devices", metavar="PCI_ADDRESS", type=str, nargs="+", help="device PCI address")
     bind_driver_p.set_defaults(func=bind_driver)
 
     unbind_driver_p = subparsers.add_parser("unbind-driver", help="unbind drivers from devices")
     unbind_driver_p.add_argument(
-        "-d", "--driver", metavar="DRIVER", help="unbind driver from devices (if not specified unbind any bound driver)"
+        "-d",
+        "--driver",
+        metavar="DRIVER",
+        help="unbind driver from devices (if not specified unbind any bound driver)",
     )
     unbind_driver_p.add_argument(
-        "-i", "--ignore-others", help="unbind only specified driver and ignore others", action="store_true"
+        "-i", "--ignore-others", help="unbind only specified driver and ignore others", action="store_true",
     )
     unbind_driver_p.add_argument(
-        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true"
+        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
     )
     unbind_driver_p.add_argument("devices", metavar="PCI_ADDRESS", type=str, nargs="+", help="device PCI address")
     unbind_driver_p.set_defaults(func=unbind_driver)
 
     restart_services_p = subparsers.add_parser("restart-services", help="restart NVIDIA services")
     restart_services_p.add_argument(
-        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true"
+        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
     )
     restart_services_p.set_defaults(func=restart_services)
 
@@ -1110,7 +1160,7 @@ def main():
 
     if args.debug:
         logging.basicConfig(
-            format="%(asctime)s %(levelname)s %(pathname)s:%(lineno)s: %(message)s", level=logging.DEBUG
+            format="%(asctime)s %(levelname)s %(pathname)s:%(lineno)s: %(message)s", level=logging.DEBUG,
         )
     else:
         logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
@@ -1118,7 +1168,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        DEV_CTL = DevCtl(wait_for_device=args.wait, num_trials=args.trials, wait_delay=args.delay, debug=args.debug)
+        DEV_CTL = DevCtl(wait_for_device=args.wait, num_trials=args.trials, wait_delay=args.delay, debug=args.debug,)
     except DevCtlException:
         logging.exception("Cloud not create DevCtl")
         return 1
@@ -1129,7 +1179,9 @@ def main():
         LOG.exception("Could not execute %s command", args.subcommand)
         return 1
     except PermissionError:
-        LOG.exception("Could not execute %s command, try to run this command as root", args.subcommand)
+        LOG.exception(
+            "Could not execute %s command, try to run this command as root", args.subcommand,
+        )
         return 1
 
     if result is None:
