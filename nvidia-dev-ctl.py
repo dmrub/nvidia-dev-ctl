@@ -909,7 +909,6 @@ class DevCtl:
 
         self.rebind_device_driver(pci_address, driver_name, dry_run=dry_run)
         a = self._create_mdev_internal(pci_address, mdev_type_name, mdev_uuid, dry_run=dry_run)
-        print("self._create_mdev_internal ->", a)  # DEBUG
         return a
 
     def remove_mdev(self, mdev_uuid: str, dry_run=False) -> bool:
@@ -993,7 +992,6 @@ def create_mdev(args):
     ):
         return 0
     else:
-        print("FAILED", file=sys.stderr)  # DEBUG
         return 1
 
 
