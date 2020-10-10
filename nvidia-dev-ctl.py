@@ -388,6 +388,13 @@ class MdevType:
         if not dry_run:
             with open(remove_path, "w") as f:
                 print("1", file=f)
+            # Wait until the path of the remote mdev device disappears
+            counter = 10
+            while os.path.exists(self.path) and counter > 0:
+                time.sleep(0.001)
+                counter -= 1
+            # Reset path to realpath since path is not valid anymore
+            self.path = self.realpath
             self.update()
         return dry_run or not os.path.exists(sysfs_mdev_path(self.pci_address, self.type, uuid))
 
