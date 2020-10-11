@@ -31,6 +31,7 @@ import re
 from collections import OrderedDict, defaultdict
 from typing import Callable, Optional, Sequence
 import uuid
+import tempfile
 
 LOG = logging.getLogger(__name__)
 
@@ -137,6 +138,8 @@ def sysfs_mdev_remove_path(pci_address, mdev_type_name, mdev_uuid):
 
 
 RE_EXEC_MAIN_STATUS = re.compile(r"ExecMainStatus=(\d+)")
+
+RE_DOMAIN_STATE = re.compile(r"^State:\s*([^\s].*)$", re.MULTILINE)
 
 
 def get_service_exit_code(service_name):
@@ -332,7 +335,7 @@ def bind_driver_to_pci_devices(
             try:
                 with open(driver_bind_path, "w") as f:
                     print(dev, file=f)
-            except OSError as e:
+            except OSError:
                 # Sometimes 'OSError: [Errno 19] No such device' appears, we check if it can be ignored.
                 current_driver_name = get_driver_of_pci_device(dev, empty_driver_name_if_no_driver=True)
                 if current_driver_name != driver_name:
@@ -941,6 +944,182 @@ class DevCtl:
             )
             return False
 
+    def run_virsh(self, args: Sequence[str], virsh_connection="qemu:///system"):
+        virsh_command = ["virsh"]
+        if virsh_connection:
+            virsh_command.append("-c")
+            virsh_command.append(virsh_connection)
+        virsh_command.extend(args)
+        LOG.info("Run: %s", " ".join(virsh_command))
+        output = subprocess.check_output(virsh_command).decode("utf-8")
+        return output
+
+    def get_domain_state(self, domain: str, virsh_connection="qemu:///system"):
+        output = self.run_virsh(["dominfo", domain])
+        m = RE_DOMAIN_STATE.search(output)
+        if not m:
+            raise DevCtlException("Could not get state of the virsh domain {}".format(domain))
+        domain_state = m.group(1)
+        return domain_state
+
+    def restart_domain(
+        self, domain: str, virsh_connection="qemu:///system", virsh_trials=60, virsh_delay=1.0, dry_run=False
+    ):
+        dry_run_prefix = "Dry run: " if dry_run else ""
+
+        LOG.info(dry_run_prefix + "Shutdown domain %s", domain)
+
+        if not dry_run:
+            domain_running = True
+
+            output = self.run_virsh(["shutdown", domain], virsh_connection=virsh_connection)
+            counter = virsh_trials
+            while counter > 0:
+                domain_state = self.get_domain_state(domain, virsh_connection=virsh_connection)
+                domain_running = domain_state == "running"
+                LOG.info("Domain %s is in state %s", domain, domain_state)
+                if not domain_running:
+                    break
+                LOG.info("Waiting for the domain %s to be shut off", domain)
+                time.sleep(virsh_delay)
+                counter -= 1
+
+            if domain_running:
+                raise DevCtlException("Could not stop domain %s", domain)
+
+        LOG.info(dry_run_prefix + "Start domain %s", domain)
+
+        if not dry_run:
+            domain_running = False
+            output = self.run_virsh(["start", domain], virsh_connection=virsh_connection)
+            counter = virsh_trials
+            while counter > 0:
+                domain_state = self.get_domain_state(domain, virsh_connection=virsh_connection)
+                domain_running = domain_state == "running"
+                if domain_running:
+                    LOG.info("Domain %s is in state %s", domain, domain_state)
+                    break
+                LOG.info("Waiting for the domain %s to be running", domain)
+                time.sleep(virsh_delay)
+                counter -= 1
+
+            if not domain_running:
+                raise DevCtlException("Could not start domain %s", domain)
+
+    def attach_mdev(
+        self,
+        mdev_uuid: str,
+        domain: str,
+        virsh_connection="qemu:///system",
+        hotplug=False,
+        virsh_trials=60,
+        virsh_delay=1.0,
+        dry_run=False,
+    ):
+        if not mdev_uuid:
+            LOG.error("No mdev UUID is specified")
+            return False
+
+        if not domain:
+            LOG.error("No domain is specified")
+            return False
+
+        dry_run_prefix = "Dry run: " if dry_run else ""
+
+        domain_state = self.get_domain_state(domain, virsh_connection=virsh_connection)
+        domain_running = domain_state == "running"
+
+        try:
+            dev_fname = None
+            with tempfile.NamedTemporaryFile(suffix=".xml", mode="w+t", delete=False) as tmp_dev:
+                dev_xml = """
+<hostdev mode='subsystem' type='mdev' managed='no' model='vfio-pci' display='off'>
+      <source>
+            <address uuid='{}'/>
+      </source>
+</hostdev>
+                """.format(
+                    mdev_uuid
+                )
+                LOG.info("XML device file: %s", dev_xml)
+                tmp_dev.write(dev_xml)
+                dev_fname = tmp_dev.name
+
+            LOG.info(dry_run_prefix + "Attach mdev device %s to domain %s", mdev_uuid, domain)
+            if not dry_run:
+
+                if hotplug and domain_running:
+                    cmd = ["attach-device", domain, "--file", dev_fname, "--persistent"]
+                else:
+                    cmd = ["attach-device", domain, "--file", dev_fname, "--config"]
+
+                output = self.run_virsh(cmd, virsh_connection=virsh_connection)
+
+        finally:
+            if dev_fname:
+                os.remove(dev_fname)
+
+        if domain_running and not hotplug:
+            self.restart_domain(domain, dry_run=dry_run)
+        return True
+
+    def detach_mdev(
+        self,
+        mdev_uuid: str,
+        domain: str,
+        virsh_connection="qemu:///system",
+        hotplug=False,
+        virsh_trials=60,
+        virsh_delay=1.0,
+        dry_run=False,
+    ):
+        if not mdev_uuid:
+            LOG.error("No mdev UUID is specified")
+            return False
+
+        if not domain:
+            LOG.error("No domain is specified")
+            return False
+
+        dry_run_prefix = "Dry run: " if dry_run else ""
+
+        domain_state = self.get_domain_state(domain, virsh_connection=virsh_connection)
+        domain_running = domain_state == "running"
+
+        try:
+            dev_fname = None
+            with tempfile.NamedTemporaryFile(suffix=".xml", mode="w+t", delete=False) as tmp_dev:
+                dev_xml = """
+<hostdev mode='subsystem' type='mdev' managed='no' model='vfio-pci' display='off'>
+      <source>
+            <address uuid='{}'/>
+      </source>
+</hostdev>
+                """.format(
+                    mdev_uuid
+                )
+                LOG.info("XML device file: %s", dev_xml)
+                tmp_dev.write(dev_xml)
+                dev_fname = tmp_dev.name
+
+            LOG.info(dry_run_prefix + "Detach mdev device %s from domain %s", mdev_uuid, domain)
+            if not dry_run:
+
+                if hotplug and domain_running:
+                    cmd = ["detach-device", domain, "--file", dev_fname, "--persistent"]
+                else:
+                    cmd = ["detach-device", domain, "--file", dev_fname, "--config"]
+
+                output = self.run_virsh(cmd, virsh_connection=virsh_connection)
+
+        finally:
+            if dev_fname:
+                os.remove(dev_fname)
+
+        if domain_running and not hotplug:
+            self.restart_domain(domain, dry_run=dry_run)
+        return True
+
 
 DEV_CTL: Optional[DevCtl] = None
 
@@ -1012,6 +1191,36 @@ def remove_mdev(args):
         return 1
 
 
+def attach_mdev(args):
+    if DEV_CTL.attach_mdev(
+        mdev_uuid=args.mdev_uuid,
+        domain=args.domain,
+        virsh_connection=args.connection,
+        hotplug=args.hotplug,
+        virsh_trials=args.virsh_trials,
+        virsh_delay=args.virsh_delay,
+        dry_run=args.dry_run,
+    ):
+        return 0
+    else:
+        return 1
+
+
+def detach_mdev(args):
+    if DEV_CTL.detach_mdev(
+        mdev_uuid=args.mdev_uuid,
+        domain=args.domain,
+        virsh_connection=args.connection,
+        hotplug=args.hotplug,
+        virsh_trials=args.virsh_trials,
+        virsh_delay=args.virsh_delay,
+        dry_run=args.dry_run,
+    ):
+        return 0
+    else:
+        return 1
+
+
 def restart_services(args):
     if restart_nvidia_services(dry_run=args.dry_run):
         return 0
@@ -1023,7 +1232,7 @@ def main():
     global DEV_CTL
 
     parser = argparse.ArgumentParser(
-        description="NVIDIA Device Control", formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description="NVIDIA Device Control", formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument("--debug", help="debug mode", action="store_true")
     parser.add_argument("-w", "--wait", help="wait until mdev bus is available", action="store_true")
@@ -1163,6 +1372,50 @@ def main():
         "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
     )
     restart_services_p.set_defaults(func=restart_services)
+
+    detach_mdev_p = subparsers.add_parser("detach-mdev", help="detach mdev device from virsh domain (virtual machine)")
+    detach_mdev_p.add_argument("mdev_uuid", metavar="UUID", help="UUID of the mdev device to remove")
+    detach_mdev_p.add_argument("domain", metavar="DOMAIN", help="domain name, id or uuid")
+    detach_mdev_p.add_argument(
+        "--virsh-trials", type=int, default=60, metavar="N", help="number of trials if waiting for virsh",
+    )
+    detach_mdev_p.add_argument(
+        "--virsh-delay",
+        type=int,
+        default=1,
+        metavar="SECONDS",
+        help="delay time in seconds between trials if waiting for virsh",
+    )
+    detach_mdev_p.add_argument("-c", "--connection", metavar="URL", help="virsh connection URL")
+    detach_mdev_p.add_argument(
+        "--hotplug", help="affect the running domain and keep changes after reboot", action="store_true"
+    )
+    detach_mdev_p.add_argument(
+        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
+    )
+    detach_mdev_p.set_defaults(func=detach_mdev)
+
+    attach_mdev_p = subparsers.add_parser("attach-mdev", help="attach mdev device to virsh domain (virtual machine)")
+    attach_mdev_p.add_argument("mdev_uuid", metavar="UUID", help="UUID of the mdev device to remove")
+    attach_mdev_p.add_argument("domain", metavar="DOMAIN", help="domain name, id or uuid")
+    attach_mdev_p.add_argument(
+        "--virsh-trials", type=int, default=60, metavar="N", help="number of trials if waiting for virsh",
+    )
+    attach_mdev_p.add_argument(
+        "--virsh-delay",
+        type=int,
+        default=1,
+        metavar="SECONDS",
+        help="delay time in seconds between trials if waiting for virsh",
+    )
+    attach_mdev_p.add_argument("-c", "--connection", metavar="URL", help="virsh connection URL")
+    attach_mdev_p.add_argument(
+        "--hotplug", help="affect the running domain and keep changes after reboot", action="store_true"
+    )
+    attach_mdev_p.add_argument(
+        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
+    )
+    attach_mdev_p.set_defaults(func=attach_mdev)
 
     args = parser.parse_args()
 
