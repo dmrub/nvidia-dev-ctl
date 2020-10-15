@@ -242,7 +242,7 @@ def each_pci_device_address_and_path(vendor=None, path_waiter: PathWaiterCB = No
 
 
 def unbind_driver_from_pci_devices(
-    driver: str, devices: Sequence[str], path_waiter: PathWaiterCB = None, dry_run=False
+        driver: str, devices: Sequence[str], path_waiter: PathWaiterCB = None, dry_run=False
 ):
     assert driver is not None, "driver should be not None"
     driver_path = "/sys/bus/pci/drivers/{}".format(driver)
@@ -270,7 +270,7 @@ def unbind_driver_from_pci_devices(
 
 
 def get_driver_of_pci_device(
-    pci_device_address, empty_driver_name_if_no_driver=False, path_waiter: PathWaiterCB = None
+        pci_device_address, empty_driver_name_if_no_driver=False, path_waiter: PathWaiterCB = None
 ):
     if not pci_device_address:
         raise NoPCIAddressError(pci_device_address)
@@ -295,7 +295,7 @@ def unbind_pci_device_drivers(devices: Sequence[str], path_waiter: PathWaiterCB 
 
 
 def bind_driver_to_pci_devices(
-    driver_name: str, devices: Sequence[str], path_waiter: PathWaiterCB = None, dry_run=False
+        driver_name: str, devices: Sequence[str], path_waiter: PathWaiterCB = None, dry_run=False
 ):
     assert driver_name is not None, "driver name should be not None"
     dry_run_prefix = "Dry run: " if dry_run else ""
@@ -449,7 +449,7 @@ class MdevDeviceClass:
         if self._supported_mdev_types is None:
             self._supported_mdev_types = OrderedDict()
             for mdev_type, mdev_type_path in each_supported_mdev_type_and_path(
-                self.pci_address, path_waiter=self.path_waiter
+                    self.pci_address, path_waiter=self.path_waiter
             ):
                 self._supported_mdev_types[mdev_type] = MdevType.from_path(mdev_type_path, path_waiter=self.path_waiter)
         return self._supported_mdev_types
@@ -626,7 +626,7 @@ class DevCtl:
             if output_all_columns:
                 return row
             else:
-                return (row[0], row[1], row[2], row[3])
+                return row[0], row[1], row[2], row[3]
 
         mdev_types = [
             column_filter(
@@ -653,13 +653,14 @@ class DevCtl:
                     )
 
         print_table(mdev_types)
+        return True
 
     def print_mdev_devices(self, pci_addresses_filter, mdev_types_filter, output_all_columns=False):
         def column_filter(row):
             if output_all_columns:
                 return row
             else:
-                return (row[0], row[1], row[2], row[3], row[6])
+                return row[0], row[1], row[2], row[3], row[6]
 
         mdev_devices = [
             column_filter(
@@ -687,11 +688,12 @@ class DevCtl:
             )
 
         print_table(mdev_devices)
+        return True
 
     def print_pci_devices(self, pci_addresses_filter, output_format=TEXT_FORMAT):
         pci_devices = [("PCI_ADDRESS", "DEVICE_DRIVER", "PCI_DEVICE_PATH")]
         for pci_address, device_path in each_pci_device_address_and_path(
-            vendor=NVIDIA_VENDOR, path_waiter=self.wait_for_device_path
+                vendor=NVIDIA_VENDOR, path_waiter=self.wait_for_device_path
         ):
             if pci_addresses_filter and pci_address not in pci_addresses_filter:
                 continue
@@ -708,6 +710,7 @@ class DevCtl:
         else:
             # text format
             print(" ".join([i[0] for i in pci_devices[1:]]))
+        return True
 
     def save_config(self, output_file) -> bool:
         output_file.write("# NVIDIA Device Configuration\n")
@@ -716,11 +719,15 @@ class DevCtl:
 
         mdev_devices_by_pci_address = defaultdict(list)
 
-        for mdev_device in self.mdev_devices.values():
-            mdev_devices_by_pci_address[mdev_device.pci_address].append(mdev_device)
+        try:
+            for mdev_device in self.mdev_devices.values():
+                mdev_devices_by_pci_address[mdev_device.pci_address].append(mdev_device)
+        except FileNotFoundError as e:
+            if not e.filename.startswith(MDEV_BUS_DEVICE_PATH):
+                raise
 
         for pci_address, device_path in each_pci_device_address_and_path(
-            vendor=NVIDIA_VENDOR, path_waiter=self.wait_for_device_path
+                vendor=NVIDIA_VENDOR, path_waiter=self.wait_for_device_path
         ):
             try:
                 driver_name = get_driver_of_pci_device(pci_address)
@@ -801,7 +808,7 @@ class DevCtl:
         return bind_driver_to_pci_devices(driver, devices, path_waiter=self.wait_for_device_path, dry_run=dry_run)
 
     def unbind_driver(
-        self, driver=None, devices: Optional[Sequence[str]] = None, ignore_others=False, dry_run=False,
+            self, driver=None, devices: Optional[Sequence[str]] = None, ignore_others=False, dry_run=False,
     ):
         if not devices:
             return False
@@ -899,12 +906,12 @@ class DevCtl:
             return False
 
     def create_mdev(
-        self,
-        pci_address: str,
-        mdev_type_name: str,
-        driver_name: str = "nvidia",
-        mdev_uuid: Optional[str] = None,
-        dry_run=False,
+            self,
+            pci_address: str,
+            mdev_type_name: str,
+            driver_name: str = "nvidia",
+            mdev_uuid: Optional[str] = None,
+            dry_run=False,
     ) -> Optional[str]:
         if not pci_address:
             LOG.error("No PCI address is specified")
@@ -963,7 +970,7 @@ class DevCtl:
         return domain_state
 
     def restart_domain(
-        self, domain: str, virsh_connection="qemu:///system", virsh_trials=60, virsh_delay=1.0, dry_run=False
+            self, domain: str, virsh_connection="qemu:///system", virsh_trials=60, virsh_delay=1.0, dry_run=False
     ):
         dry_run_prefix = "Dry run: " if dry_run else ""
 
@@ -1007,15 +1014,15 @@ class DevCtl:
                 raise DevCtlException("Could not start domain %s", domain)
 
     def attach_mdev(
-        self,
-        mdev_uuid: str,
-        domain: str,
-        virsh_connection="qemu:///system",
-        hotplug=False,
-        restart=False,
-        virsh_trials=60,
-        virsh_delay=1.0,
-        dry_run=False,
+            self,
+            mdev_uuid: str,
+            domain: str,
+            virsh_connection="qemu:///system",
+            hotplug=False,
+            restart=False,
+            virsh_trials=60,
+            virsh_delay=1.0,
+            dry_run=False,
     ):
         if restart and hotplug:
             LOG.error("restart and hotplug options cannot be used simultaneously")
@@ -1068,15 +1075,15 @@ class DevCtl:
         return True
 
     def detach_mdev(
-        self,
-        mdev_uuid: str,
-        domain: str,
-        virsh_connection="qemu:///system",
-        hotplug=False,
-        restart=False,
-        virsh_trials=60,
-        virsh_delay=1.0,
-        dry_run=False,
+            self,
+            mdev_uuid: str,
+            domain: str,
+            virsh_connection="qemu:///system",
+            hotplug=False,
+            restart=False,
+            virsh_trials=60,
+            virsh_delay=1.0,
+            dry_run=False,
     ):
         if restart and hotplug:
             LOG.error("restart and hotplug options cannot be used simultaneously")
@@ -1132,22 +1139,33 @@ DEV_CTL: Optional[DevCtl] = None
 
 
 def list_pci(args):
-    return DEV_CTL.print_pci_devices(pci_addresses_filter=args.pci_addresses, output_format=args.output_format)
+    result = DEV_CTL.print_pci_devices(pci_addresses_filter=args.pci_addresses, output_format=args.output_format)
+    return 0 if result else 1
 
 
 def list_mdev(args):
-    if args.classes:
-        return DEV_CTL.print_mdev_device_classes(
-            pci_addresses_filter=args.pci_addresses,
-            mdev_types_filter=args.mdev_types,
-            output_all_columns=args.output_all,
-        )
-    else:
-        return DEV_CTL.print_mdev_devices(
-            pci_addresses_filter=args.pci_addresses,
-            mdev_types_filter=args.mdev_types,
-            output_all_columns=args.output_all,
-        )
+    result = False
+    try:
+        if args.classes:
+            result = DEV_CTL.print_mdev_device_classes(
+                pci_addresses_filter=args.pci_addresses,
+                mdev_types_filter=args.mdev_types,
+                output_all_columns=args.output_all,
+            )
+        else:
+            result = DEV_CTL.print_mdev_devices(
+                pci_addresses_filter=args.pci_addresses,
+                mdev_types_filter=args.mdev_types,
+                output_all_columns=args.output_all,
+            )
+    except FileNotFoundError as e:
+        if e.filename.startswith(MDEV_BUS_DEVICE_PATH):
+            LOG.error("Could not access MDEV devices in sysfs: %s", e.filename)
+        elif e.filename.startswith(MDEV_BUS_CLASS_PATH):
+            LOG.error("Could not access MDEV device classes in sysfs: %s", e.filename)
+        else:
+            raise
+    return 0 if result else 1
 
 
 def save_config(args):
@@ -1173,7 +1191,7 @@ def bind_driver(args):
 
 def unbind_driver(args):
     if DEV_CTL.unbind_driver(
-        driver=args.driver, devices=args.devices, ignore_others=args.ignore_others, dry_run=args.dry_run,
+            driver=args.driver, devices=args.devices, ignore_others=args.ignore_others, dry_run=args.dry_run,
     ):
         return 0
     else:
@@ -1200,14 +1218,14 @@ def remove_mdev(args):
 
 def attach_mdev(args):
     if DEV_CTL.attach_mdev(
-        mdev_uuid=args.mdev_uuid,
-        domain=args.domain,
-        virsh_connection=args.connection,
-        hotplug=args.hotplug,
-        restart=args.restart,
-        virsh_trials=args.virsh_trials,
-        virsh_delay=args.virsh_delay,
-        dry_run=args.dry_run,
+            mdev_uuid=args.mdev_uuid,
+            domain=args.domain,
+            virsh_connection=args.connection,
+            hotplug=args.hotplug,
+            restart=args.restart,
+            virsh_trials=args.virsh_trials,
+            virsh_delay=args.virsh_delay,
+            dry_run=args.dry_run,
     ):
         return 0
     else:
@@ -1216,14 +1234,14 @@ def attach_mdev(args):
 
 def detach_mdev(args):
     if DEV_CTL.detach_mdev(
-        mdev_uuid=args.mdev_uuid,
-        domain=args.domain,
-        virsh_connection=args.connection,
-        hotplug=args.hotplug,
-        restart=args.restart,
-        virsh_trials=args.virsh_trials,
-        virsh_delay=args.virsh_delay,
-        dry_run=args.dry_run,
+            mdev_uuid=args.mdev_uuid,
+            domain=args.domain,
+            virsh_connection=args.connection,
+            hotplug=args.hotplug,
+            restart=args.restart,
+            virsh_trials=args.virsh_trials,
+            virsh_delay=args.virsh_delay,
+            dry_run=args.dry_run,
     ):
         return 0
     else:
@@ -1444,7 +1462,7 @@ def main():
     args = parser.parse_args()
 
     try:
-        DEV_CTL = DevCtl(wait_for_device=args.wait, num_trials=args.trials, wait_delay=args.delay, debug=args.debug,)
+        DEV_CTL = DevCtl(wait_for_device=args.wait, num_trials=args.trials, wait_delay=args.delay, debug=args.debug, )
     except DevCtlException:
         logging.exception("Cloud not create DevCtl")
         return 1
