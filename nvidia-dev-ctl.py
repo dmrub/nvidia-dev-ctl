@@ -1054,6 +1054,64 @@ class DevCtl:
             print(" ".join([i[0] for i in used_pci_devices[1:]]))
         return True
 
+    def print_used_mdev_devices(
+            self,
+            pci_addresses_filter,
+            mdev_types_filter,
+            output_format=TEXT_FORMAT,
+            output_all_columns=False,
+            virsh_connection="qemu:///system",
+    ):
+        def column_filter(row):
+            if output_all_columns:
+                return row
+            else:
+                return row[0], row[1], row[2], row[3], row[6]
+
+        used_mdev_devices = [
+            column_filter(
+                ("MDEV_DEVICE_UUID", "PCI_ADDRESS", "TYPE", "NAME", "AVAILABLE_INSTANCES", "DESCRIPTION", "VM_NAME",)
+            )
+        ]
+
+        all_domains = self.list_all_domains(virsh_connection=virsh_connection)
+        for domain in all_domains:
+            xml = self.run_virsh(("dumpxml", "--domain", domain), virsh_connection=virsh_connection)
+            root = ET.fromstring(xml)
+            for pci_hostdev in root.findall("./devices/hostdev[@type='mdev']"):
+                if (
+                        pci_hostdev.attrib.get("mode") == "subsystem"
+                        and pci_hostdev.attrib.get("model") == "vfio-pci"
+                        and pci_hostdev.attrib.get("managed") == "no"
+                        and pci_hostdev.attrib.get("display") == "off"
+                ):
+                    for address in pci_hostdev.findall("./source/address[@uuid]"):
+                        mdev_uuid = address.attrib.get("uuid")
+                        if not mdev_uuid:
+                            continue
+                        mdev_device = self.mdev_devices.get(mdev_uuid)
+                        if mdev_device:
+                            if pci_addresses_filter and mdev_device.pci_address not in pci_addresses_filter:
+                                continue
+                            if mdev_types_filter and mdev_device.mdev_type.type not in mdev_types_filter:
+                                continue
+                            column = (
+                                mdev_device.uuid,
+                                mdev_device.pci_address,
+                                mdev_device.mdev_type.type,
+                                mdev_device.mdev_type.name,
+                                mdev_device.mdev_type.available_instances,
+                                mdev_device.mdev_type.description,
+                                domain,
+                            )
+                            used_mdev_devices.append(column_filter(column))
+        if output_format == TABLE_FORMAT:
+            print_table(used_mdev_devices)
+        else:
+            # text format
+            print(" ".join([i[0] for i in used_mdev_devices[1:]]))
+        return True
+
     def attach_mdev(
             self,
             mdev_uuid: str,
@@ -1212,6 +1270,19 @@ def list_mdev(args):
 def list_used_pci(args):
     if DEV_CTL.print_used_pci_devices(
             pci_addresses_filter=args.pci_addresses, output_format=args.output_format, virsh_connection=args.connection
+    ):
+        return 0
+    else:
+        return 1
+
+
+def list_used_mdev(args):
+    if DEV_CTL.print_used_mdev_devices(
+            pci_addresses_filter=args.pci_addresses,
+            mdev_types_filter=args.mdev_types,
+            output_format=args.output_format,
+            output_all_columns=args.output_all,
+            virsh_connection=args.connection,
     ):
         return 0
     else:
@@ -1387,8 +1458,31 @@ def main():
         default="table",
         dest="output_format",
     )
-
     list_used_pci_p.set_defaults(func=list_used_pci)
+
+    list_used_mdev_p = subparsers.add_parser("list-used-mdev", help="list used mdev devices")
+    list_used_mdev_p.add_argument("-c", "--connection", metavar="URL", help="virsh connection URL")
+    list_used_mdev_p.add_argument(
+        "-p",
+        "--pci-address",
+        help="show only devices with specified pci addresses",
+        action="append",
+        dest="pci_addresses",
+    )
+    list_used_mdev_p.add_argument(
+        "-m", "--mdev-type", help="show only devices with specified mdev types", action="append", dest="mdev_types",
+    )
+    list_used_mdev_p.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        help="output format",
+        choices=["table", "text"],
+        default="table",
+        dest="output_format",
+    )
+    list_used_mdev_p.add_argument("-O", "--output-all", help="output all columns", action="store_true")
+    list_used_mdev_p.set_defaults(func=list_used_mdev)
 
     create_mdev_p = subparsers.add_parser("create-mdev", help="create new mdev device")
     create_mdev_p.add_argument(
