@@ -10,6 +10,7 @@ The following operations are provided by the tool via subcommands:
 
   * [list-pci](#list-pci-command) - list all NVIDIA PCI devices detected by the NVIDIA driver
   * [list-mdev](#list-mdev-command) - list all registered mediated devices (mdev) i.e. virtual GPUs (vGPUs)
+  * [list-used-pci](#list-used-pci-command) - list all NVIDIA PCI devices used by virtual machines
   * [create-mdev](#create-mdev-command) - create new mdev device
   * [remove-mdev](#remove-mdev-command) - remove existing mdev device
   * [save](#save-command) - dump current NVIDIA device configuration for later loading using the restore` command.
@@ -183,6 +184,47 @@ optional arguments:
   -O, --output-all      output all columns
 ```
 
+## list-used-pci command
+
+`list-used-pci` outputs NVIDIA devices on the PCI bus that are used by libvirt virtual machines (domains). The `-o` or `--output` option controls the mode of output. In the default table mode, the PCI device address and the name of the virtual machine are output:
+
+```
+$ nvidia-dev-ctl.py list-used-pci -o table
+PCI_ADDRESS  VM_NAME
+0000:43:00.0 test-vm-1-node-01
+0000:86:00.0 test-vm-3-node-01
+```
+
+The output can be restricted to the PCI addresses specified by the `-p` or `--pci-address` option:
+
+```
+$ nvidia-dev-ctl.py list-used-pci -o table -p 0000:43:00.0
+PCI_ADDRESS  VM_NAME
+0000:43:00.0 test-vm-1-node-01
+```
+
+In text mode only PCI addresses are output:
+
+```
+$ nvidia-dev-ctl.py list-used-pci -o text
+0000:43:00.0 0000:86:00.0
+```
+
+All `list-used-pci` command options:
+
+```
+usage: nvidia-dev-ctl.py list-used-pci [-h] [-c URL] [-p PCI_ADDRESSES]
+                                       [-o {table,text}]
+
+optional arguments:
+  -h, --help            show this help message and exit
+  -c URL, --connection URL
+                        virsh connection URL
+  -p PCI_ADDRESSES, --pci-address PCI_ADDRESSES
+                        show only devices with specified pci addresses
+  -o {table,text}, --output {table,text}
+                        output format
+```
 
 ## create-mdev command
 

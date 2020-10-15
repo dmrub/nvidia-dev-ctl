@@ -32,6 +32,7 @@ from collections import OrderedDict, defaultdict
 from typing import Callable, Optional, Sequence
 import uuid
 import tempfile
+import xml.etree.ElementTree as ET
 
 LOG = logging.getLogger(__name__)
 
@@ -961,6 +962,10 @@ class DevCtl:
         output = subprocess.check_output(virsh_command).decode("utf-8")
         return output
 
+    def list_all_domains(self, virsh_connection="qemu:///system"):
+        output = self.run_virsh(("list", "--all", "--name"), virsh_connection=virsh_connection)
+        return [l for l in output.splitlines() if len(l) > 0]
+
     def get_domain_state(self, domain: str, virsh_connection="qemu:///system"):
         output = self.run_virsh(["dominfo", domain])
         m = RE_DOMAIN_STATE.search(output)
@@ -1012,6 +1017,42 @@ class DevCtl:
 
             if not domain_running:
                 raise DevCtlException("Could not start domain %s", domain)
+
+    def print_used_pci_devices(
+            self, pci_addresses_filter, output_format=TEXT_FORMAT, virsh_connection="qemu:///system"
+    ):
+        used_pci_devices = [("PCI_ADDRESS", "VM_NAME")]
+        all_domains = self.list_all_domains(virsh_connection=virsh_connection)
+        for domain in all_domains:
+            xml = self.run_virsh(("dumpxml", "--domain", domain), virsh_connection=virsh_connection)
+            root = ET.fromstring(xml)
+            for pci_hostdev in root.findall("./devices/hostdev[@type='pci']"):
+                if pci_hostdev.attrib.get("mode") == "subsystem":
+                    for address in pci_hostdev.findall("./source/address"):
+                        pci_domain = address.attrib.get("domain")
+                        pci_bus = address.attrib.get("bus")
+                        pci_slot = address.attrib.get("slot")
+                        pci_function = address.attrib.get("function")
+                        if not (pci_domain and pci_bus and pci_slot and pci_function):
+                            continue
+                        if pci_domain.startswith("0x"):
+                            pci_domain = pci_domain[2:]
+                        if pci_bus.startswith("0x"):
+                            pci_bus = pci_bus[2:]
+                        if pci_slot.startswith("0x"):
+                            pci_slot = pci_slot[2:]
+                        if pci_function.startswith("0x"):
+                            pci_function = pci_function[2:]
+                        pci_address = "{}:{}:{}.{}".format(pci_domain, pci_bus, pci_slot, pci_function)
+                        if pci_addresses_filter and pci_address not in pci_addresses_filter:
+                            continue
+                        used_pci_devices.append((pci_address, domain))
+        if output_format == TABLE_FORMAT:
+            print_table(used_pci_devices)
+        else:
+            # text format
+            print(" ".join([i[0] for i in used_pci_devices[1:]]))
+        return True
 
     def attach_mdev(
             self,
@@ -1168,6 +1209,15 @@ def list_mdev(args):
     return 0 if result else 1
 
 
+def list_used_pci(args):
+    if DEV_CTL.print_used_pci_devices(
+            pci_addresses_filter=args.pci_addresses, output_format=args.output_format, virsh_connection=args.connection
+    ):
+        return 0
+    else:
+        return 1
+
+
 def save_config(args):
     if DEV_CTL.save_config(output_file=args.output_file):
         return 0
@@ -1318,6 +1368,27 @@ def main():
 
     list_mdev_p = subparsers.add_parser("list-mdev", help="list registered mdev devices")
     register_list_mdev_args(list_mdev_p)
+
+    list_used_pci_p = subparsers.add_parser("list-used-pci", help="list used NVIDIA PCI devices")
+    list_used_pci_p.add_argument("-c", "--connection", metavar="URL", help="virsh connection URL")
+    list_used_pci_p.add_argument(
+        "-p",
+        "--pci-address",
+        help="show only devices with specified pci addresses",
+        action="append",
+        dest="pci_addresses",
+    )
+    list_used_pci_p.add_argument(
+        "-o",
+        "--output",
+        type=str,
+        help="output format",
+        choices=["table", "text"],
+        default="table",
+        dest="output_format",
+    )
+
+    list_used_pci_p.set_defaults(func=list_used_pci)
 
     create_mdev_p = subparsers.add_parser("create-mdev", help="create new mdev device")
     create_mdev_p.add_argument(
