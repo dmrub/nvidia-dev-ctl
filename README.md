@@ -420,14 +420,19 @@ optional arguments:
 
 ## attach-mdev command
 
-The `attach-mdev` command attaches the vGPU device specified by UUID to the libvirt domain (i.e., the virtual machine). If no `--hotplug` option is specified and the domain is running, the command restarts it after attaching.
+The `attach-mdev` command attaches the vGPU device specified by UUID to the libvirt domain (i.e., the virtual machine).
+By default, the change is only applied to the configuration and only takes effect after a restart.
+If the `--restart` option is specified, the domain is restarted after the change.
+If the `--hotplug` option is specified, the device is immediately available within the domain without restart.
+The `--restart` and `--hotplug` options cannot be used together. To display actions to be performed without actually making changes,
+use the `--n` or `--run-dry` option.
 
 All `attach-mdev` command options:
 
 ```
 usage: nvidia-dev-ctl.py attach-mdev [-h] [--virsh-trials N]
                                      [--virsh-delay SECONDS] [-c URL]
-                                     [--hotplug] [-n]
+                                     [--hotplug] [--restart] [-n]
                                      UUID DOMAIN
 
 positional arguments:
@@ -444,19 +449,27 @@ optional arguments:
                         virsh connection URL
   --hotplug             affect the running domain and keep changes after
                         reboot
+  --restart             shutdown and reboot the domain after the changes are
+                        made
   -n, --dry-run         Do everything except actually make changes
 ```
 
 ## detach-mdev command
 
-The `detach-mdev` command does the opposite of the `attach-mdev` command by detaching the vGPU device specified with its UUID from the domain (i.e., the virtual machine). If no `--hotplug` option is specified and the domain is running, the command restarts it after attaching.
+The `detach-mdev` command does the opposite of the `attach-mdev` command by detaching the vGPU device specified with
+its UUID from the domain (i.e., the virtual machine).
+By default, the change is only applied to the configuration and only takes effect after a restart.
+If the `--restart` option is specified, the domain is restarted after the change.
+If the `--hotplug` option is specified, the device is immediately available within the domain without restart.
+The `--restart` and `--hotplug` options cannot be used together. To display actions to be performed without actually making changes,
+use the `--n` or `--run-dry` option.
 
 All `detach-mdev` command options:
 
 ```
 usage: nvidia-dev-ctl.py detach-mdev [-h] [--virsh-trials N]
                                      [--virsh-delay SECONDS] [-c URL]
-                                     [--hotplug] [-n]
+                                     [--hotplug] [--restart] [-n]
                                      UUID DOMAIN
 
 positional arguments:
@@ -473,5 +486,7 @@ optional arguments:
                         virsh connection URL
   --hotplug             affect the running domain and keep changes after
                         reboot
+  --restart             shutdown and reboot the domain after the changes are
+                        made
   -n, --dry-run         Do everything except actually make changes
 ```

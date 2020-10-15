@@ -1012,10 +1012,14 @@ class DevCtl:
         domain: str,
         virsh_connection="qemu:///system",
         hotplug=False,
+        restart=False,
         virsh_trials=60,
         virsh_delay=1.0,
         dry_run=False,
     ):
+        if restart and hotplug:
+            LOG.error("restart and hotplug options cannot be used simultaneously")
+
         if not mdev_uuid:
             LOG.error("No mdev UUID is specified")
             return False
@@ -1059,7 +1063,7 @@ class DevCtl:
             if dev_fname:
                 os.remove(dev_fname)
 
-        if domain_running and not hotplug:
+        if domain_running and restart and not hotplug:
             self.restart_domain(domain, dry_run=dry_run)
         return True
 
@@ -1069,10 +1073,13 @@ class DevCtl:
         domain: str,
         virsh_connection="qemu:///system",
         hotplug=False,
+        restart=False,
         virsh_trials=60,
         virsh_delay=1.0,
         dry_run=False,
     ):
+        if restart and hotplug:
+            LOG.error("restart and hotplug options cannot be used simultaneously")
         if not mdev_uuid:
             LOG.error("No mdev UUID is specified")
             return False
@@ -1116,7 +1123,7 @@ class DevCtl:
             if dev_fname:
                 os.remove(dev_fname)
 
-        if domain_running and not hotplug:
+        if domain_running and restart and not hotplug:
             self.restart_domain(domain, dry_run=dry_run)
         return True
 
@@ -1197,6 +1204,7 @@ def attach_mdev(args):
         domain=args.domain,
         virsh_connection=args.connection,
         hotplug=args.hotplug,
+        restart=args.restart,
         virsh_trials=args.virsh_trials,
         virsh_delay=args.virsh_delay,
         dry_run=args.dry_run,
@@ -1212,6 +1220,7 @@ def detach_mdev(args):
         domain=args.domain,
         virsh_connection=args.connection,
         hotplug=args.hotplug,
+        restart=args.restart,
         virsh_trials=args.virsh_trials,
         virsh_delay=args.virsh_delay,
         dry_run=args.dry_run,
@@ -1373,28 +1382,6 @@ def main():
     )
     restart_services_p.set_defaults(func=restart_services)
 
-    detach_mdev_p = subparsers.add_parser("detach-mdev", help="detach mdev device from virsh domain (virtual machine)")
-    detach_mdev_p.add_argument("mdev_uuid", metavar="UUID", help="UUID of the mdev device to remove")
-    detach_mdev_p.add_argument("domain", metavar="DOMAIN", help="domain name, id or uuid")
-    detach_mdev_p.add_argument(
-        "--virsh-trials", type=int, default=60, metavar="N", help="number of trials if waiting for virsh",
-    )
-    detach_mdev_p.add_argument(
-        "--virsh-delay",
-        type=int,
-        default=1,
-        metavar="SECONDS",
-        help="delay time in seconds between trials if waiting for virsh",
-    )
-    detach_mdev_p.add_argument("-c", "--connection", metavar="URL", help="virsh connection URL")
-    detach_mdev_p.add_argument(
-        "--hotplug", help="affect the running domain and keep changes after reboot", action="store_true"
-    )
-    detach_mdev_p.add_argument(
-        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
-    )
-    detach_mdev_p.set_defaults(func=detach_mdev)
-
     attach_mdev_p = subparsers.add_parser("attach-mdev", help="attach mdev device to virsh domain (virtual machine)")
     attach_mdev_p.add_argument("mdev_uuid", metavar="UUID", help="UUID of the mdev device to remove")
     attach_mdev_p.add_argument("domain", metavar="DOMAIN", help="domain name, id or uuid")
@@ -1413,9 +1400,37 @@ def main():
         "--hotplug", help="affect the running domain and keep changes after reboot", action="store_true"
     )
     attach_mdev_p.add_argument(
+        "--restart", help="shutdown and reboot the domain after the changes are made", action="store_true"
+    )
+    attach_mdev_p.add_argument(
         "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
     )
     attach_mdev_p.set_defaults(func=attach_mdev)
+
+    detach_mdev_p = subparsers.add_parser("detach-mdev", help="detach mdev device from virsh domain (virtual machine)")
+    detach_mdev_p.add_argument("mdev_uuid", metavar="UUID", help="UUID of the mdev device to remove")
+    detach_mdev_p.add_argument("domain", metavar="DOMAIN", help="domain name, id or uuid")
+    detach_mdev_p.add_argument(
+        "--virsh-trials", type=int, default=60, metavar="N", help="number of trials if waiting for virsh",
+    )
+    detach_mdev_p.add_argument(
+        "--virsh-delay",
+        type=int,
+        default=1,
+        metavar="SECONDS",
+        help="delay time in seconds between trials if waiting for virsh",
+    )
+    detach_mdev_p.add_argument("-c", "--connection", metavar="URL", help="virsh connection URL")
+    detach_mdev_p.add_argument(
+        "--hotplug", help="affect the running domain and keep changes after reboot", action="store_true"
+    )
+    detach_mdev_p.add_argument(
+        "--restart", help="shutdown and reboot the domain after the changes are made", action="store_true"
+    )
+    detach_mdev_p.add_argument(
+        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
+    )
+    detach_mdev_p.set_defaults(func=detach_mdev)
 
     args = parser.parse_args()
 
