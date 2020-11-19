@@ -21,6 +21,8 @@ The following operations are provided by the tool via subcommands:
   * [restart-services](#restart-services-command) - restart NVIDIA services
   * [attach-mdev](#attach-mdev-command) - attach NVIDIA mdev device to virsh domain (virtual machine)
   * [detach-mdev](#detach-mdev-command) - detach NVIDIA mdev device from virsh domain (virtual machine)
+  * [attach-pci](#attach-pci-command) - attach NVIDIA GPU device to virsh domain (virtual machine)
+  * [detach-pci](#detach-pci-command) - detach NVIDIA GPU device from virsh domain (virtual machine)
 
 Running `nvidia-dev-ctl.py` with the `--help` option will output the help information below. Details about subcommands can be output by using the `--help` option with the appropriate subcommand, e.g. `nvidia-dev-ctl.py save --help`:
 
@@ -572,6 +574,79 @@ usage: nvidia-dev-ctl.py detach-mdev [-h] [--virsh-trials N]
 
 positional arguments:
   UUID                  UUID of the mdev device to remove
+  DOMAIN                domain name, id or uuid
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --virsh-trials N      number of trials if waiting for virsh
+  --virsh-delay SECONDS
+                        delay time in seconds between trials if waiting for
+                        virsh
+  -c URL, --connection URL
+                        virsh connection URL
+  --hotplug             affect the running domain and keep changes after
+                        reboot
+  --restart             shutdown and reboot the domain after the changes are
+                        made
+  -n, --dry-run         Do everything except actually make changes
+```
+
+## attach-pci command
+
+The `attach-pci` command attaches the PCI device specified by its address to the libvirt domain (i.e., the virtual machine).
+By default, the change is only applied to the configuration and only takes effect after a restart.
+If the `--restart` option is specified, the domain is restarted after the change.
+If the `--hotplug` option is specified, the device is immediately available within the domain without restart.
+The `--restart` and `--hotplug` options cannot be used together. To display actions to be performed without actually making changes,
+use the `--n` or `--run-dry` option.
+
+All `attach-pci` command options:
+
+```
+usage: nvidia-dev-ctl.py attach-pci [-h] [--virsh-trials N]
+                                    [--virsh-delay SECONDS] [-c URL]
+                                    [--hotplug] [--restart] [-n]
+                                    PCI_ADDRESS DOMAIN
+
+positional arguments:
+  PCI_ADDRESS           PCI address of the NVIDIA device to attach
+  DOMAIN                domain name, id or uuid
+
+optional arguments:
+  -h, --help            show this help message and exit
+  --virsh-trials N      number of trials if waiting for virsh
+  --virsh-delay SECONDS
+                        delay time in seconds between trials if waiting for
+                        virsh
+  -c URL, --connection URL
+                        virsh connection URL
+  --hotplug             affect the running domain and keep changes after
+                        reboot
+  --restart             shutdown and reboot the domain after the changes are
+                        made
+  -n, --dry-run         Do everything except actually make changes
+```
+
+## detach-pci command
+
+The `detach-pci` command does the opposite of the `attach-pci` command by detaching the PCI device specified with
+its address from the domain (i.e., the virtual machine).
+By default, the change is only applied to the configuration and only takes effect after a restart.
+If the `--restart` option is specified, the domain is restarted after the change.
+If the `--hotplug` option is specified, the device is immediately available within the domain without restart.
+The `--restart` and `--hotplug` options cannot be used together. To display actions to be performed without actually making changes,
+use the `--n` or `--run-dry` option.
+
+All `detach-pci` command options:
+
+```
+usage: nvidia-dev-ctl.py detach-pci [-h] [--virsh-trials N]
+                                    [--virsh-delay SECONDS] [-c URL]
+                                    [--hotplug] [--restart] [-n]
+                                    PCI_ADDRESS DOMAIN
+
+positional arguments:
+  PCI_ADDRESS           PCI address of the NVIDIA device to attach
   DOMAIN                domain name, id or uuid
 
 optional arguments:

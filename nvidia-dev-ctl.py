@@ -142,6 +142,8 @@ RE_EXEC_MAIN_STATUS = re.compile(r"ExecMainStatus=(\d+)")
 
 RE_DOMAIN_STATE = re.compile(r"^State:\s*([^\s].*)$", re.MULTILINE)
 
+RE_PCI_ADDRESS = re.compile(r"([0-9a-fA-F]{4}):([0-9a-fA-F]{2}):([0-9a-fA-F]{2}).([0-9a-fA-F]{1})")
+
 
 def get_service_exit_code(service_name):
     output = subprocess.check_output(["systemctl", "show", "-p", "ExecMainStatus", service_name]).decode("utf-8")
@@ -1233,6 +1235,155 @@ class DevCtl:
             self.restart_domain(domain, dry_run=dry_run)
         return True
 
+    def attach_pci(
+            self,
+            pci_address: str,
+            domain: str,
+            virsh_connection="qemu:///system",
+            hotplug=False,
+            restart=False,
+            virsh_trials=60,
+            virsh_delay=1.0,
+            dry_run=False,
+    ):
+        if restart and hotplug:
+            LOG.error("restart and hotplug options cannot be used simultaneously")
+
+        if not pci_address:
+            LOG.error("No PCI address is specified")
+            return False
+
+        if not domain:
+            LOG.error("No domain is specified")
+            return False
+
+        dry_run_prefix = "Dry run: " if dry_run else ""
+
+        domain_state = self.get_domain_state(domain, virsh_connection=virsh_connection)
+        domain_running = domain_state == "running"
+
+        m = RE_PCI_ADDRESS.match(pci_address)
+        if not m:
+            raise DevCtlException('{} is not a PCI address'.format(pci_address))
+
+        # split pci_address
+        pci_domain = int(m.group(1), 16)
+        pci_bus = int(m.group(2), 16)
+        pci_slot = int(m.group(3), 16)
+        pci_function = int(m.group(4), 16)
+
+        try:
+            dev_fname = None
+            with tempfile.NamedTemporaryFile(suffix=".xml", mode="w+t", delete=False) as tmp_dev:
+                dev_xml = """
+<hostdev mode='subsystem' type='pci' managed='yes'>
+    <driver name='vfio'/>
+    <source>
+        <address domain='0x{:04x}' bus='0x{:02x}' slot='0x{:02x}' function='0x{:01x}'/>
+    </source>
+</hostdev>
+                """.format(
+                    pci_domain,
+                    pci_bus,
+                    pci_slot,
+                    pci_function
+                )
+                LOG.info("XML device file: %s", dev_xml)
+                tmp_dev.write(dev_xml)
+                dev_fname = tmp_dev.name
+
+            LOG.info(dry_run_prefix + "Attach PCI device %s to domain %s", pci_address, domain)
+            if not dry_run:
+
+                if hotplug and domain_running:
+                    cmd = ["attach-device", domain, "--file", dev_fname, "--persistent"]
+                else:
+                    cmd = ["attach-device", domain, "--file", dev_fname, "--config"]
+
+                output = self.run_virsh(cmd, virsh_connection=virsh_connection)
+
+        finally:
+            if dev_fname:
+                os.remove(dev_fname)
+
+        if domain_running and restart and not hotplug:
+            self.restart_domain(domain, dry_run=dry_run)
+        return True
+
+    def detach_pci(
+            self,
+            pci_address: str,
+            domain: str,
+            virsh_connection="qemu:///system",
+            hotplug=False,
+            restart=False,
+            virsh_trials=60,
+            virsh_delay=1.0,
+            dry_run=False,
+    ):
+        if restart and hotplug:
+            LOG.error("restart and hotplug options cannot be used simultaneously")
+        if not pci_address:
+            LOG.error("No PCI address is specified")
+            return False
+
+        if not domain:
+            LOG.error("No domain is specified")
+            return False
+
+        dry_run_prefix = "Dry run: " if dry_run else ""
+
+        domain_state = self.get_domain_state(domain, virsh_connection=virsh_connection)
+        domain_running = domain_state == "running"
+
+        m = RE_PCI_ADDRESS.match(pci_address)
+        if not m:
+            raise DevCtlException('{} is not a PCI address'.format(pci_address))
+
+        # split pci_address
+        pci_domain = int(m.group(1), 16)
+        pci_bus = int(m.group(2), 16)
+        pci_slot = int(m.group(3), 16)
+        pci_function = int(m.group(4), 16)
+
+        try:
+            dev_fname = None
+            with tempfile.NamedTemporaryFile(suffix=".xml", mode="w+t", delete=False) as tmp_dev:
+                dev_xml = """
+<hostdev mode='subsystem' type='pci' managed='yes'>
+    <driver name='vfio'/>
+    <source>
+        <address domain='0x{:04x}' bus='0x{:02x}' slot='0x{:02x}' function='0x{:01x}'/>
+    </source>
+</hostdev>
+                """.format(
+                    pci_domain,
+                    pci_bus,
+                    pci_slot,
+                    pci_function
+                )
+                LOG.info("XML device file: %s", dev_xml)
+                tmp_dev.write(dev_xml)
+                dev_fname = tmp_dev.name
+
+            LOG.info(dry_run_prefix + "Detach PCI device %s from domain %s", pci_address, domain)
+            if not dry_run:
+
+                if hotplug and domain_running:
+                    cmd = ["detach-device", domain, "--file", dev_fname, "--persistent"]
+                else:
+                    cmd = ["detach-device", domain, "--file", dev_fname, "--config"]
+
+                output = self.run_virsh(cmd, virsh_connection=virsh_connection)
+
+        finally:
+            if dev_fname:
+                os.remove(dev_fname)
+
+        if domain_running and restart and not hotplug:
+            self.restart_domain(domain, dry_run=dry_run)
+        return True
+
 
 DEV_CTL: Optional[DevCtl] = None
 
@@ -1356,6 +1507,38 @@ def attach_mdev(args):
 def detach_mdev(args):
     if DEV_CTL.detach_mdev(
             mdev_uuid=args.mdev_uuid,
+            domain=args.domain,
+            virsh_connection=args.connection,
+            hotplug=args.hotplug,
+            restart=args.restart,
+            virsh_trials=args.virsh_trials,
+            virsh_delay=args.virsh_delay,
+            dry_run=args.dry_run,
+    ):
+        return 0
+    else:
+        return 1
+
+
+def attach_pci(args):
+    if DEV_CTL.attach_pci(
+            pci_address=args.pci_address,
+            domain=args.domain,
+            virsh_connection=args.connection,
+            hotplug=args.hotplug,
+            restart=args.restart,
+            virsh_trials=args.virsh_trials,
+            virsh_delay=args.virsh_delay,
+            dry_run=args.dry_run,
+    ):
+        return 0
+    else:
+        return 1
+
+
+def detach_pci(args):
+    if DEV_CTL.detach_pci(
+            pci_address=args.pci_address,
             domain=args.domain,
             virsh_connection=args.connection,
             hotplug=args.hotplug,
@@ -1614,6 +1797,56 @@ def main():
         "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
     )
     detach_mdev_p.set_defaults(func=detach_mdev)
+
+    attach_pci_p = subparsers.add_parser("attach-pci", help="attach pci device to virsh domain (virtual machine)")
+    attach_pci_p.add_argument("pci_address", metavar="PCI_ADDRESS", help="PCI address of the NVIDIA device to attach")
+    attach_pci_p.add_argument("domain", metavar="DOMAIN", help="domain name, id or uuid")
+    attach_pci_p.add_argument(
+        "--virsh-trials", type=int, default=60, metavar="N", help="number of trials if waiting for virsh",
+    )
+    attach_pci_p.add_argument(
+        "--virsh-delay",
+        type=int,
+        default=1,
+        metavar="SECONDS",
+        help="delay time in seconds between trials if waiting for virsh",
+    )
+    attach_pci_p.add_argument("-c", "--connection", metavar="URL", help="virsh connection URL")
+    attach_pci_p.add_argument(
+        "--hotplug", help="affect the running domain and keep changes after reboot", action="store_true"
+    )
+    attach_pci_p.add_argument(
+        "--restart", help="shutdown and reboot the domain after the changes are made", action="store_true"
+    )
+    attach_pci_p.add_argument(
+        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
+    )
+    attach_pci_p.set_defaults(func=attach_pci)
+
+    detach_pci_p = subparsers.add_parser("detach-pci", help="detach pci device from virsh domain (virtual machine)")
+    detach_pci_p.add_argument("pci_address", metavar="PCI_ADDRESS", help="PCI address of the NVIDIA device to attach")
+    detach_pci_p.add_argument("domain", metavar="DOMAIN", help="domain name, id or uuid")
+    detach_pci_p.add_argument(
+        "--virsh-trials", type=int, default=60, metavar="N", help="number of trials if waiting for virsh",
+    )
+    detach_pci_p.add_argument(
+        "--virsh-delay",
+        type=int,
+        default=1,
+        metavar="SECONDS",
+        help="delay time in seconds between trials if waiting for virsh",
+    )
+    detach_pci_p.add_argument("-c", "--connection", metavar="URL", help="virsh connection URL")
+    detach_pci_p.add_argument(
+        "--hotplug", help="affect the running domain and keep changes after reboot", action="store_true"
+    )
+    detach_pci_p.add_argument(
+        "--restart", help="shutdown and reboot the domain after the changes are made", action="store_true"
+    )
+    detach_pci_p.add_argument(
+        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
+    )
+    detach_pci_p.set_defaults(func=detach_pci)
 
     args = parser.parse_args()
 
