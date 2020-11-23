@@ -152,7 +152,7 @@ RE_EXEC_MAIN_STATUS = re.compile(r"ExecMainStatus=(\d+)")
 
 RE_DOMAIN_STATE = re.compile(r"^State:\s*([^\s].*)$", re.MULTILINE)
 
-RE_PCI_ADDRESS = re.compile(r"([0-9a-fA-F]{4}):([0-9a-fA-F]{2}):([0-9a-fA-F]{2}).([0-9a-fA-F]{1})")
+RE_PCI_ADDRESS = re.compile(r"([0-9a-fA-F]{4}):([0-9a-fA-F]{2}):([0-9a-fA-F]{2}).([0-9a-fA-F])")
 
 
 class PCIAddress(namedtuple("PCIAddress", ["domain", "bus", "slot", "function"])):
@@ -226,7 +226,13 @@ class PCIDevices(object):
             entry[tag] = value
         if entry:
             self.devices.append(entry)
-        entry = None
+
+
+PCI_DEVICES: Optional[PCIDevices] = None
+
+
+class UsedPCIDevice(namedtuple("UsedPCIDevice", ["pci_address", "name", "domain"])):
+    pass
 
 
 def get_service_exit_code(service_name):
@@ -436,8 +442,8 @@ class MdevType:
         self.path_waiter = path_waiter
         self.realpath = os.path.realpath(path)
         path_head, self.type = os.path.split(self.realpath)
-        path_head_1, mdev_suppored_types_sym = os.path.split(path_head)
-        if mdev_suppored_types_sym != "mdev_supported_types":
+        path_head_1, mdev_supported_types_sym = os.path.split(path_head)
+        if mdev_supported_types_sym != "mdev_supported_types":
             raise DevCtlException("Path {} does not end with 'mdev_supported_types".format(path_head))
         self.pci_address = os.path.basename(path_head_1)
         os.path.dirname(self.realpath)
@@ -750,7 +756,7 @@ class DevCtl:
         return True
 
     def print_mdev_devices(self, pci_addresses_filter, mdev_types_filter, output_all_columns=False):
-        pci_devices = PCIDevices()
+        global PCI_DEVICES
 
         def column_filter(row):
             if output_all_columns:
@@ -783,7 +789,7 @@ class DevCtl:
                     (
                         mdev_device.uuid,
                         mdev_device.pci_address,
-                        pci_devices.get_tag(mdev_device.pci_address, "Device", "unknown"),
+                        PCI_DEVICES.get_tag(mdev_device.pci_address, "Device", "unknown"),
                         mdev_device.mdev_type.type,
                         mdev_device.mdev_type.name,
                         mdev_device.mdev_type.available_instances,
@@ -797,7 +803,7 @@ class DevCtl:
         return True
 
     def print_pci_devices(self, pci_addresses_filter, output_format=TEXT_FORMAT, output_all_columns=False):
-        pci_devices = PCIDevices()
+        global PCI_DEVICES
 
         def column_filter(row):
             if output_all_columns:
@@ -820,7 +826,7 @@ class DevCtl:
                 driver_name = "no driver"
             pci_devices_tbl.append(
                 column_filter(
-                    (pci_address, pci_devices.get_tag(pci_address, "Device", "unknown"), driver_name, device_path)
+                    (pci_address, PCI_DEVICES.get_tag(pci_address, "Device", "unknown"), driver_name, device_path)
                 )
             )
 
@@ -953,11 +959,11 @@ class DevCtl:
         return True
 
     def fix_mdev(self):
-        restart_services = False
+        do_restart_services = False
         for svc in ("nvidia-vgpud.service", "nvidia-vgpu-mgr.service"):
             if get_service_exit_code(svc) != 0:
-                restart_services = True
-        if restart_services:
+                do_restart_services = True
+        if do_restart_services:
             restart_nvidia_services()
 
     def _create_mdev_internal(self, pci_address: str, mdev_type_name: str, mdev_uuid: str, dry_run=False) -> bool:
@@ -1082,10 +1088,10 @@ class DevCtl:
 
     def list_all_domains(self, virsh_connection="qemu:///system"):
         output = self.run_virsh(("list", "--all", "--name"), virsh_connection=virsh_connection)
-        return [l for l in output.splitlines() if len(l) > 0]
+        return [line for line in output.splitlines() if len(line) > 0]
 
     def get_domain_state(self, domain: str, virsh_connection="qemu:///system"):
-        output = self.run_virsh(["dominfo", domain])
+        output = self.run_virsh(["dominfo", domain], virsh_connection=virsh_connection)
         m = RE_DOMAIN_STATE.search(output)
         if not m:
             raise DevCtlException("Could not get state of the virsh domain {}".format(domain))
@@ -1102,7 +1108,7 @@ class DevCtl:
         if not dry_run:
             domain_running = True
 
-            output = self.run_virsh(["shutdown", domain], virsh_connection=virsh_connection)
+            self.run_virsh(["shutdown", domain], virsh_connection=virsh_connection)
             counter = virsh_trials
             while counter > 0:
                 domain_state = self.get_domain_state(domain, virsh_connection=virsh_connection)
@@ -1121,7 +1127,7 @@ class DevCtl:
 
         if not dry_run:
             domain_running = False
-            output = self.run_virsh(["start", domain], virsh_connection=virsh_connection)
+            self.run_virsh(["start", domain], virsh_connection=virsh_connection)
             counter = virsh_trials
             while counter > 0:
                 domain_state = self.get_domain_state(domain, virsh_connection=virsh_connection)
@@ -1136,10 +1142,44 @@ class DevCtl:
             if not domain_running:
                 raise DevCtlException("Could not start domain %s", domain)
 
+    def get_used_pci_devices(self, pci_addresses_filter, virsh_connection="qemu:///system"):
+        global PCI_DEVICES
+
+        used_pci_devices = []
+
+        all_domains = self.list_all_domains(virsh_connection=virsh_connection)
+        for domain in all_domains:
+            xml = self.run_virsh(("dumpxml", "--domain", domain), virsh_connection=virsh_connection)
+            root = ET.fromstring(xml)
+            for pci_hostdev in root.findall("./devices/hostdev[@type='pci']"):
+                if pci_hostdev.attrib.get("mode") == "subsystem":
+                    for address in pci_hostdev.findall("./source/address"):
+                        pci_domain = address.attrib.get("domain")
+                        pci_bus = address.attrib.get("bus")
+                        pci_slot = address.attrib.get("slot")
+                        pci_function = address.attrib.get("function")
+                        if not (pci_domain and pci_bus and pci_slot and pci_function):
+                            continue
+                        pci_domain = int(pci_domain, 0)
+                        pci_bus = int(pci_bus, 0)
+                        pci_slot = int(pci_slot, 0)
+                        pci_function = int(pci_function, 0)
+                        pci_address_obj = PCIAddress(pci_domain, pci_bus, pci_slot, pci_function)
+                        pci_address = str(pci_address_obj)
+                        if pci_addresses_filter and pci_address not in pci_addresses_filter:
+                            continue
+                        device = UsedPCIDevice(
+                            pci_address=pci_address_obj,
+                            name=PCI_DEVICES.get_tag(pci_address, "Device", None),
+                            domain=domain,
+                        )
+                        used_pci_devices.append(device)
+        return used_pci_devices
+
     def print_used_pci_devices(
         self, pci_addresses_filter, output_format=TEXT_FORMAT, virsh_connection="qemu:///system"
     ):
-        pci_devices = PCIDevices()
+        global PCI_DEVICES
 
         used_pci_devices_tbl = [("PCI_ADDRESS", "DEVICE", "VM_NAME")]
         all_domains = self.list_all_domains(virsh_connection=virsh_connection)
@@ -1167,7 +1207,7 @@ class DevCtl:
                         if pci_addresses_filter and pci_address not in pci_addresses_filter:
                             continue
                         used_pci_devices_tbl.append(
-                            (pci_address, pci_devices.get_tag(pci_address, "Device", "unknown"), domain)
+                            (pci_address, PCI_DEVICES.get_tag(pci_address, "Device", "unknown"), domain)
                         )
         if output_format == TABLE_FORMAT:
             print_table(used_pci_devices_tbl)
@@ -1184,8 +1224,6 @@ class DevCtl:
         output_all_columns=False,
         virsh_connection="qemu:///system",
     ):
-        pci_devices = PCIDevices()
-
         def column_filter(row):
             if output_all_columns:
                 return row
@@ -1231,7 +1269,7 @@ class DevCtl:
                             column = (
                                 mdev_device.uuid,
                                 mdev_device.pci_address,
-                                pci_devices.get_tag(mdev_device.pci_address, "Device", "unknown"),
+                                PCI_DEVICES.get_tag(mdev_device.pci_address, "Device", "unknown"),
                                 mdev_device.mdev_type.type,
                                 mdev_device.mdev_type.name,
                                 mdev_device.mdev_type.available_instances,
@@ -1253,8 +1291,6 @@ class DevCtl:
         virsh_connection="qemu:///system",
         hotplug=False,
         restart=False,
-        virsh_trials=60,
-        virsh_delay=1.0,
         dry_run=False,
     ):
         if restart and hotplug:
@@ -1297,7 +1333,7 @@ class DevCtl:
                 else:
                     cmd = ["attach-device", domain, "--file", dev_fname, "--config"]
 
-                output = self.run_virsh(cmd, virsh_connection=virsh_connection)
+                self.run_virsh(cmd, virsh_connection=virsh_connection)
 
         finally:
             if dev_fname:
@@ -1314,8 +1350,6 @@ class DevCtl:
         virsh_connection="qemu:///system",
         hotplug=False,
         restart=False,
-        virsh_trials=60,
-        virsh_delay=1.0,
         dry_run=False,
     ):
         if restart and hotplug:
@@ -1357,7 +1391,7 @@ class DevCtl:
                 else:
                     cmd = ["detach-device", domain, "--file", dev_fname, "--config"]
 
-                output = self.run_virsh(cmd, virsh_connection=virsh_connection)
+                self.run_virsh(cmd, virsh_connection=virsh_connection)
 
         finally:
             if dev_fname:
@@ -1374,8 +1408,6 @@ class DevCtl:
         virsh_connection="qemu:///system",
         hotplug=False,
         restart=False,
-        virsh_trials=60,
-        virsh_delay=1.0,
         dry_run=False,
     ):
         if restart and hotplug:
@@ -1395,6 +1427,9 @@ class DevCtl:
         domain_running = domain_state == "running"
 
         pci_address_obj = PCIAddress.parse(pci_address)
+
+        if not self.bind_driver(driver="vfio-pci", devices=[pci_address], dry_run=dry_run):
+            return False
 
         try:
             dev_fname = None
@@ -1421,7 +1456,7 @@ class DevCtl:
                 else:
                     cmd = ["attach-device", domain, "--file", dev_fname, "--config"]
 
-                output = self.run_virsh(cmd, virsh_connection=virsh_connection)
+                self.run_virsh(cmd, virsh_connection=virsh_connection)
 
         finally:
             if dev_fname:
@@ -1438,8 +1473,6 @@ class DevCtl:
         virsh_connection="qemu:///system",
         hotplug=False,
         restart=False,
-        virsh_trials=60,
-        virsh_delay=1.0,
         dry_run=False,
     ):
         if restart and hotplug:
@@ -1484,7 +1517,7 @@ class DevCtl:
                 else:
                     cmd = ["detach-device", domain, "--file", dev_fname, "--config"]
 
-                output = self.run_virsh(cmd, virsh_connection=virsh_connection)
+                self.run_virsh(cmd, virsh_connection=virsh_connection)
 
         finally:
             if dev_fname:
@@ -1607,8 +1640,6 @@ def attach_mdev(args):
         virsh_connection=args.connection,
         hotplug=args.hotplug,
         restart=args.restart,
-        virsh_trials=args.virsh_trials,
-        virsh_delay=args.virsh_delay,
         dry_run=args.dry_run,
     ):
         return 0
@@ -1623,8 +1654,6 @@ def detach_mdev(args):
         virsh_connection=args.connection,
         hotplug=args.hotplug,
         restart=args.restart,
-        virsh_trials=args.virsh_trials,
-        virsh_delay=args.virsh_delay,
         dry_run=args.dry_run,
     ):
         return 0
@@ -1639,8 +1668,6 @@ def attach_pci(args):
         virsh_connection=args.connection,
         hotplug=args.hotplug,
         restart=args.restart,
-        virsh_trials=args.virsh_trials,
-        virsh_delay=args.virsh_delay,
         dry_run=args.dry_run,
     ):
         return 0
@@ -1655,8 +1682,6 @@ def detach_pci(args):
         virsh_connection=args.connection,
         hotplug=args.hotplug,
         restart=args.restart,
-        virsh_trials=args.virsh_trials,
-        virsh_delay=args.virsh_delay,
         dry_run=args.dry_run,
     ):
         return 0
@@ -1672,7 +1697,7 @@ def restart_services(args):
 
 
 def main():
-    global DEV_CTL
+    global DEV_CTL, PCI_DEVICES
 
     parser = argparse.ArgumentParser(
         description="NVIDIA Device Control", formatter_class=argparse.ArgumentDefaultsHelpFormatter
@@ -1872,16 +1897,6 @@ def main():
     attach_mdev_p = subparsers.add_parser("attach-mdev", help="attach mdev device to virsh domain (virtual machine)")
     attach_mdev_p.add_argument("mdev_uuid", metavar="UUID", help="UUID of the mdev device to remove")
     attach_mdev_p.add_argument("domain", metavar="DOMAIN", help="domain name, id or uuid")
-    attach_mdev_p.add_argument(
-        "--virsh-trials", type=int, default=60, metavar="N", help="number of trials if waiting for virsh",
-    )
-    attach_mdev_p.add_argument(
-        "--virsh-delay",
-        type=int,
-        default=1,
-        metavar="SECONDS",
-        help="delay time in seconds between trials if waiting for virsh",
-    )
     attach_mdev_p.add_argument("-c", "--connection", metavar="URL", help="virsh connection URL")
     attach_mdev_p.add_argument(
         "--hotplug", help="affect the running domain and keep changes after reboot", action="store_true"
@@ -1897,16 +1912,6 @@ def main():
     detach_mdev_p = subparsers.add_parser("detach-mdev", help="detach mdev device from virsh domain (virtual machine)")
     detach_mdev_p.add_argument("mdev_uuid", metavar="UUID", help="UUID of the mdev device to remove")
     detach_mdev_p.add_argument("domain", metavar="DOMAIN", help="domain name, id or uuid")
-    detach_mdev_p.add_argument(
-        "--virsh-trials", type=int, default=60, metavar="N", help="number of trials if waiting for virsh",
-    )
-    detach_mdev_p.add_argument(
-        "--virsh-delay",
-        type=int,
-        default=1,
-        metavar="SECONDS",
-        help="delay time in seconds between trials if waiting for virsh",
-    )
     detach_mdev_p.add_argument("-c", "--connection", metavar="URL", help="virsh connection URL")
     detach_mdev_p.add_argument(
         "--hotplug", help="affect the running domain and keep changes after reboot", action="store_true"
@@ -1922,16 +1927,6 @@ def main():
     attach_pci_p = subparsers.add_parser("attach-pci", help="attach pci device to virsh domain (virtual machine)")
     attach_pci_p.add_argument("pci_address", metavar="PCI_ADDRESS", help="PCI address of the NVIDIA device to attach")
     attach_pci_p.add_argument("domain", metavar="DOMAIN", help="domain name, id or uuid")
-    attach_pci_p.add_argument(
-        "--virsh-trials", type=int, default=60, metavar="N", help="number of trials if waiting for virsh",
-    )
-    attach_pci_p.add_argument(
-        "--virsh-delay",
-        type=int,
-        default=1,
-        metavar="SECONDS",
-        help="delay time in seconds between trials if waiting for virsh",
-    )
     attach_pci_p.add_argument("-c", "--connection", metavar="URL", help="virsh connection URL")
     attach_pci_p.add_argument(
         "--hotplug", help="affect the running domain and keep changes after reboot", action="store_true"
@@ -1947,16 +1942,6 @@ def main():
     detach_pci_p = subparsers.add_parser("detach-pci", help="detach pci device from virsh domain (virtual machine)")
     detach_pci_p.add_argument("pci_address", metavar="PCI_ADDRESS", help="PCI address of the NVIDIA device to attach")
     detach_pci_p.add_argument("domain", metavar="DOMAIN", help="domain name, id or uuid")
-    detach_pci_p.add_argument(
-        "--virsh-trials", type=int, default=60, metavar="N", help="number of trials if waiting for virsh",
-    )
-    detach_pci_p.add_argument(
-        "--virsh-delay",
-        type=int,
-        default=1,
-        metavar="SECONDS",
-        help="delay time in seconds between trials if waiting for virsh",
-    )
     detach_pci_p.add_argument("-c", "--connection", metavar="URL", help="virsh connection URL")
     detach_pci_p.add_argument(
         "--hotplug", help="affect the running domain and keep changes after reboot", action="store_true"
@@ -1989,6 +1974,8 @@ def main():
         logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=numeric_level)
 
     args = parser.parse_args()
+
+    PCI_DEVICES = PCIDevices()
 
     try:
         DEV_CTL = DevCtl(wait_for_device=args.wait, num_trials=args.trials, wait_delay=args.delay, debug=debug_mode,)
