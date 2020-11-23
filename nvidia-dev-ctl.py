@@ -1678,6 +1678,14 @@ def main():
         description="NVIDIA Device Control", formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     parser.add_argument("--debug", help="debug mode", action="store_true")
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "-l",
+        "--log",
+        dest="loglevel",
+        default="WARNING",
+        help="log level (use one of CRITICAL,ERROR,WARNING,INFO,DEBUG)",
+    )
     parser.add_argument("-w", "--wait", help="wait until mdev bus is available", action="store_true")
     parser.add_argument(
         "--trials", type=int, default=3, metavar="N", help="number of trials if waiting for device",
@@ -1963,17 +1971,27 @@ def main():
 
     args = parser.parse_args()
 
-    if args.debug:
+    numeric_level = getattr(logging, args.loglevel.upper(), None)
+    if not isinstance(numeric_level, int):
+        print(
+            "Invalid log level: {}, use one of CRITICAL, ERROR, WARNING, INFO, DEBUG".format(args.loglevel),
+            file=sys.stderr,
+        )
+        return 1
+
+    debug_mode = numeric_level == logging.DEBUG
+
+    if debug_mode:
         logging.basicConfig(
-            format="%(asctime)s %(levelname)s %(pathname)s:%(lineno)s: %(message)s", level=logging.DEBUG,
+            format="%(asctime)s %(levelname)s %(pathname)s:%(lineno)s: %(message)s", level=numeric_level,
         )
     else:
-        logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=logging.INFO)
+        logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=numeric_level)
 
     args = parser.parse_args()
 
     try:
-        DEV_CTL = DevCtl(wait_for_device=args.wait, num_trials=args.trials, wait_delay=args.delay, debug=args.debug,)
+        DEV_CTL = DevCtl(wait_for_device=args.wait, num_trials=args.trials, wait_delay=args.delay, debug=debug_mode,)
     except DevCtlException:
         logging.exception("Cloud not create DevCtl")
         return 1
