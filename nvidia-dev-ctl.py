@@ -810,12 +810,14 @@ class DevCtl:
             if mdev_types_filter and mdev_device.mdev_type.type not in mdev_types_filter:
                 continue
 
+            pci_device = PCI_DEVICES.find_device(mdev_device.pci_address)
+
             mdev_devices_tbl.append(
                 column_filter(
                     (
                         mdev_device.uuid,
                         mdev_device.pci_address,
-                        PCI_DEVICES.get_tag(mdev_device.pci_address, "Device", "unknown"),
+                        pci_device.name,
                         mdev_device.mdev_type.type,
                         mdev_device.mdev_type.name,
                         mdev_device.mdev_type.available_instances,
@@ -850,9 +852,12 @@ class DevCtl:
                 driver_name = "no device"
             except DeviceDriverPathNotFound:
                 driver_name = "no driver"
+
+            pci_device = PCI_DEVICES.find_device(pci_address)
+
             pci_devices_tbl.append(
                 column_filter(
-                    (pci_address, PCI_DEVICES.get_tag(pci_address, "Device", "unknown"), driver_name, device_path)
+                    (pci_address, pci_device.name, driver_name, device_path)
                 )
             )
 
