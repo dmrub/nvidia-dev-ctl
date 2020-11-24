@@ -251,12 +251,15 @@ class PCIDevices(object):
 PCI_DEVICES: Optional[PCIDevices] = None
 
 
-class UsedPCIDevice(namedtuple("UsedPCIDevice", ["pci_device", "domain"])):
+class UsedPCIDevice(NamedTuple("UsedPCIDevice", [("pci_device", PCIDevice), ("domain", str)])):
     __slots__ = ()
 
 
-class UsedMdevDevice(namedtuple("UsedMdevDevice", ["uuid", "pci_device", "domain"])):
+class UsedMdevDevice(
+    NamedTuple("UsedMdevDevice", [("mdev_device", "MdevDevice"), ("pci_device", PCIDevice), ("domain", str)])
+):
     __slots__ = ()
+
 
 def get_service_exit_code(service_name):
     output = subprocess.check_output(["systemctl", "show", "-p", "ExecMainStatus", service_name]).decode("utf-8")
@@ -1192,7 +1195,7 @@ class DevCtl:
                         if pci_addresses_filter and pci_address not in pci_addresses_filter:
                             continue
 
-                        pci_device = PCI_DEVICES.find_device(pci_address)
+                        pci_device = PCI_DEVICES.find_device(pci_address_obj)
 
                         device = UsedPCIDevice(pci_device, domain)
                         used_pci_devices.append(device)
@@ -1201,8 +1204,6 @@ class DevCtl:
     def print_used_pci_devices(
         self, pci_addresses_filter, output_format=TEXT_FORMAT, virsh_connection="qemu:///system"
     ):
-        global PCI_DEVICES
-
         used_pci_devices_tbl = [("PCI_ADDRESS", "DEVICE", "VM_NAME")]
 
         used_pci_devices = self.get_used_pci_devices(
@@ -1218,6 +1219,39 @@ class DevCtl:
             # text format
             print(" ".join([i[0] for i in used_pci_devices_tbl[1:]]))
         return True
+
+    def get_used_mdev_devices(self, pci_addresses_filter, mdev_types_filter, virsh_connection="qemu:///system"):
+        global PCI_DEVICES
+
+        used_mdev_devices = []
+
+        all_domains = self.list_all_domains(virsh_connection=virsh_connection)
+        for domain in all_domains:
+            xml = self.run_virsh(("dumpxml", "--domain", domain), virsh_connection=virsh_connection)
+            root = ET.fromstring(xml)
+            for pci_hostdev in root.findall("./devices/hostdev[@type='mdev']"):
+                if (
+                    pci_hostdev.attrib.get("mode") == "subsystem"
+                    and pci_hostdev.attrib.get("model") == "vfio-pci"
+                    and pci_hostdev.attrib.get("managed") == "no"
+                    and pci_hostdev.attrib.get("display") == "off"
+                ):
+                    for address in pci_hostdev.findall("./source/address[@uuid]"):
+                        mdev_uuid = address.attrib.get("uuid")
+                        if not mdev_uuid:
+                            continue
+                        mdev_device = self.mdev_devices.get(mdev_uuid)
+                        if mdev_device:
+                            if pci_addresses_filter and mdev_device.pci_address not in pci_addresses_filter:
+                                continue
+                            if mdev_types_filter and mdev_device.mdev_type.type not in mdev_types_filter:
+                                continue
+
+                            pci_device = PCI_DEVICES.find_device(mdev_device.pci_address)
+
+                            device = UsedMdevDevice(mdev_device=mdev_device, pci_device=pci_device, domain=domain)
+                            used_mdev_devices.append(device)
+        return used_mdev_devices
 
     def print_used_mdev_devices(
         self,
@@ -1248,38 +1282,25 @@ class DevCtl:
             )
         ]
 
-        all_domains = self.list_all_domains(virsh_connection=virsh_connection)
-        for domain in all_domains:
-            xml = self.run_virsh(("dumpxml", "--domain", domain), virsh_connection=virsh_connection)
-            root = ET.fromstring(xml)
-            for pci_hostdev in root.findall("./devices/hostdev[@type='mdev']"):
-                if (
-                    pci_hostdev.attrib.get("mode") == "subsystem"
-                    and pci_hostdev.attrib.get("model") == "vfio-pci"
-                    and pci_hostdev.attrib.get("managed") == "no"
-                    and pci_hostdev.attrib.get("display") == "off"
-                ):
-                    for address in pci_hostdev.findall("./source/address[@uuid]"):
-                        mdev_uuid = address.attrib.get("uuid")
-                        if not mdev_uuid:
-                            continue
-                        mdev_device = self.mdev_devices.get(mdev_uuid)
-                        if mdev_device:
-                            if pci_addresses_filter and mdev_device.pci_address not in pci_addresses_filter:
-                                continue
-                            if mdev_types_filter and mdev_device.mdev_type.type not in mdev_types_filter:
-                                continue
-                            column = (
-                                mdev_device.uuid,
-                                mdev_device.pci_address,
-                                PCI_DEVICES.get_tag(mdev_device.pci_address, "Device", "unknown"),
-                                mdev_device.mdev_type.type,
-                                mdev_device.mdev_type.name,
-                                mdev_device.mdev_type.available_instances,
-                                mdev_device.mdev_type.description,
-                                domain,
-                            )
-                            used_mdev_devices_tbl.append(column_filter(column))
+        used_mdev_devices = self.get_used_mdev_devices(
+            pci_addresses_filter=pci_addresses_filter,
+            mdev_types_filter=mdev_types_filter,
+            virsh_connection=virsh_connection,
+        )
+
+        for used_mdev_device in used_mdev_devices:
+            column = (
+                used_mdev_device.mdev_device.uuid,
+                used_mdev_device.mdev_device.pci_address,
+                used_mdev_device.pci_device.name,
+                used_mdev_device.mdev_device.mdev_type.type,
+                used_mdev_device.mdev_device.mdev_type.name,
+                used_mdev_device.mdev_device.mdev_type.available_instances,
+                used_mdev_device.mdev_device.mdev_type.description,
+                used_mdev_device.domain,
+            )
+            used_mdev_devices_tbl.append(column_filter(column))
+
         if output_format == TABLE_FORMAT:
             print_table(used_mdev_devices_tbl)
         else:
