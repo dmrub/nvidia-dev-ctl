@@ -30,7 +30,7 @@ import sys
 import time
 import re
 from collections import OrderedDict, defaultdict, namedtuple
-from typing import Callable, Optional, Sequence, Union
+from typing import Callable, Optional, Sequence, Union, NamedTuple
 import uuid
 import tempfile
 import xml.etree.ElementTree as ET
@@ -167,6 +167,9 @@ class PCIAddress(namedtuple("PCIAddress", ["domain", "bus", "slot", "function"])
             self.domain, self.bus, self.slot, self.function
         )
 
+    def __format__(self, format_spec):
+        return format(str(self), format_spec)
+
     @classmethod
     def parse(cls, pci_address: str) -> "PCIAddress":
         m = RE_PCI_ADDRESS.match(pci_address)
@@ -178,6 +181,24 @@ class PCIAddress(namedtuple("PCIAddress", ["domain", "bus", "slot", "function"])
         )
 
 
+class PCIDevice(NamedTuple("PCIDevice", [("pci_address", PCIAddress), ("name", str), ("vendor", str), ("tags", dict)])):
+    __slots__ = ()
+
+    def get_tag(self, tag_name, default=None):
+        return self.tags.get(tag_name, default)
+
+    @classmethod
+    def from_tags(cls, tags: dict):
+        slot = tags.get("Slot")
+        if slot:
+            pci_address = PCIAddress.parse(slot)
+        else:
+            raise InvalidPCIAddressError('No "Slot" tag in the lspci output')
+        name = tags.get("Device", "")
+        vendor = tags.get("Vendor", "")
+        return cls(pci_address=pci_address, name=name, vendor=vendor, tags=tags)
+
+
 class PCIDevices(object):
     def __init__(self, device_filter=None):
         self.device_filter = device_filter
@@ -187,20 +208,20 @@ class PCIDevices(object):
     def filter_devices(self, pci_address: Union[str, PCIAddress]):
         if not isinstance(pci_address, PCIAddress):
             pci_address = PCIAddress.parse(pci_address)
-        return [dev for dev in self.devices if dev.get("Slot") == pci_address]
+        return [dev for dev in self.devices if dev.pci_address == pci_address]
 
     def find_device(self, pci_address: Union[str, PCIAddress]):
         if not isinstance(pci_address, PCIAddress):
             pci_address = PCIAddress.parse(pci_address)
         for dev in self.devices:
-            if dev.get("Slot") == pci_address:
+            if dev.pci_address == pci_address:
                 return dev
         return None
 
     def get_tag(self, pci_address: Union[str, PCIAddress], tag_name, default=None):
         dev = self.find_device(pci_address)
         if dev:
-            return dev.get(tag_name, default)
+            return dev.get_tag(tag_name, default)
         return default
 
     def parse(self):
@@ -213,7 +234,7 @@ class PCIDevices(object):
             line = line.strip()
             if not line:
                 if entry:
-                    self.devices.append(entry)
+                    self.devices.append(PCIDevice.from_tags(entry))
                 entry = None
                 continue
             split_pos = line.find(":\t")
@@ -222,19 +243,20 @@ class PCIDevices(object):
             tag, value = line.split(":\t", 2)
             if not entry:
                 entry = {}
-            if tag == "Slot":
-                value = PCIAddress.parse(value)
             entry[tag] = value
         if entry:
-            self.devices.append(entry)
+            self.devices.append(PCIDevice.from_tags(entry))
 
 
 PCI_DEVICES: Optional[PCIDevices] = None
 
 
-class UsedPCIDevice(namedtuple("UsedPCIDevice", ["pci_address", "name", "domain"])):
-    pass
+class UsedPCIDevice(namedtuple("UsedPCIDevice", ["pci_device", "domain"])):
+    __slots__ = ()
 
+
+class UsedMdevDevice(namedtuple("UsedMdevDevice", ["uuid", "pci_device", "domain"])):
+    __slots__ = ()
 
 def get_service_exit_code(service_name):
     output = subprocess.check_output(["systemctl", "show", "-p", "ExecMainStatus", service_name]).decode("utf-8")
@@ -1169,11 +1191,10 @@ class DevCtl:
                         pci_address = str(pci_address_obj)
                         if pci_addresses_filter and pci_address not in pci_addresses_filter:
                             continue
-                        device = UsedPCIDevice(
-                            pci_address=pci_address_obj,
-                            name=PCI_DEVICES.get_tag(pci_address, "Device", None),
-                            domain=domain,
-                        )
+
+                        pci_device = PCI_DEVICES.find_device(pci_address)
+
+                        device = UsedPCIDevice(pci_device, domain)
                         used_pci_devices.append(device)
         return used_pci_devices
 
@@ -1183,33 +1204,14 @@ class DevCtl:
         global PCI_DEVICES
 
         used_pci_devices_tbl = [("PCI_ADDRESS", "DEVICE", "VM_NAME")]
-        all_domains = self.list_all_domains(virsh_connection=virsh_connection)
-        for domain in all_domains:
-            xml = self.run_virsh(("dumpxml", "--domain", domain), virsh_connection=virsh_connection)
-            root = ET.fromstring(xml)
-            for pci_hostdev in root.findall("./devices/hostdev[@type='pci']"):
-                if pci_hostdev.attrib.get("mode") == "subsystem":
-                    for address in pci_hostdev.findall("./source/address"):
-                        pci_domain = address.attrib.get("domain")
-                        pci_bus = address.attrib.get("bus")
-                        pci_slot = address.attrib.get("slot")
-                        pci_function = address.attrib.get("function")
-                        if not (pci_domain and pci_bus and pci_slot and pci_function):
-                            continue
-                        if pci_domain.startswith("0x"):
-                            pci_domain = pci_domain[2:]
-                        if pci_bus.startswith("0x"):
-                            pci_bus = pci_bus[2:]
-                        if pci_slot.startswith("0x"):
-                            pci_slot = pci_slot[2:]
-                        if pci_function.startswith("0x"):
-                            pci_function = pci_function[2:]
-                        pci_address = "{}:{}:{}.{}".format(pci_domain, pci_bus, pci_slot, pci_function)
-                        if pci_addresses_filter and pci_address not in pci_addresses_filter:
-                            continue
-                        used_pci_devices_tbl.append(
-                            (pci_address, PCI_DEVICES.get_tag(pci_address, "Device", "unknown"), domain)
-                        )
+
+        used_pci_devices = self.get_used_pci_devices(
+            pci_addresses_filter=pci_addresses_filter, virsh_connection=virsh_connection
+        )
+        for used_pci_device in used_pci_devices:
+            used_pci_devices_tbl.append(
+                (used_pci_device.pci_device.pci_address, used_pci_device.pci_device.name, used_pci_device.domain)
+            )
         if output_format == TABLE_FORMAT:
             print_table(used_pci_devices_tbl)
         else:
