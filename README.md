@@ -27,24 +27,27 @@ The following operations are provided by the tool via subcommands:
 Running `nvidia-dev-ctl.py` with the `--help` option will output the help information below. Details about subcommands can be output by using the `--help` option with the appropriate subcommand, e.g. `nvidia-dev-ctl.py save --help`:
 
 ```
-usage: nvidia-dev-ctl.py [-h] [--debug] [-w] [--trials N] [--delay SECONDS]
-                         [-p PCI_ADDRESSES] [-o {table,text}]
+usage: nvidia-dev-ctl.py [-h] [-l LOGLEVEL] [-c URL] [-w] [--trials N]
+                         [--delay SECONDS] [-p PCI_ADDRESSES]
+                         [-o {table,text}] [-O]
                          ...
-
-NVIDIA Device Control
 
 optional arguments:
   -h, --help            show this help message and exit
-  --debug               debug mode (default: False)
-  -w, --wait            wait until mdev bus is available (default: False)
-  --trials N            number of trials if waiting for device (default: 3)
+  -l LOGLEVEL, --log LOGLEVEL
+                        log level (use one of
+                        CRITICAL,ERROR,WARNING,INFO,DEBUG)
+  -c URL, --connection URL
+                        virsh connection URL
+  -w, --wait            wait until mdev bus is available
+  --trials N            number of trials if waiting for device
   --delay SECONDS       delay time in seconds between trials if waiting for
-                        device (default: 1)
+                        device
   -p PCI_ADDRESSES, --pci-address PCI_ADDRESSES
                         show only devices with specified pci addresses
-                        (default: None)
   -o {table,text}, --output {table,text}
-                        output format (default: table)
+                        output format
+  -O, --output-all      output all columns
 
 subcommands:
 
@@ -61,6 +64,8 @@ subcommands:
     restart-services    restart NVIDIA services
     attach-mdev         attach mdev device to virsh domain (virtual machine)
     detach-mdev         detach mdev device from virsh domain (virtual machine)
+    attach-pci          attach pci device to virsh domain (virtual machine)
+    detach-pci          detach pci device from virsh domain (virtual machine)
 ```
 
 ## list-pci command
@@ -218,13 +223,11 @@ $ nvidia-dev-ctl.py list-used-pci -o text
 All `list-used-pci` command options:
 
 ```
-usage: nvidia-dev-ctl.py list-used-pci [-h] [-c URL] [-p PCI_ADDRESSES]
+usage: nvidia-dev-ctl.py list-used-pci [-h] [-p PCI_ADDRESSES]
                                        [-o {table,text}]
 
 optional arguments:
   -h, --help            show this help message and exit
-  -c URL, --connection URL
-                        virsh connection URL
   -p PCI_ADDRESSES, --pci-address PCI_ADDRESSES
                         show only devices with specified pci addresses
   -o {table,text}, --output {table,text}
@@ -236,7 +239,7 @@ optional arguments:
 `list-used-mdev` outputs NVIDIA vGPU devices that are used by libvirt virtual machines (domains). By default, the device UUID, PCI device address, device type, device type name and virtual machine name are output:
 
 ```
-$ nvidia-dev-ctl.py list-used-mdev -c qemu:///system
+$ nvidia-dev-ctl.py -c qemu:///system list-used-mdev
 MDEV_DEVICE_UUID                     PCI_ADDRESS  TYPE       NAME           VM_NAME
 80129abf-2c41-4fa7-8280-84866112f31c 0000:43:00.0 nvidia-313 GRID V100D-16C foresight-vm-1-node-01
 45217cc2-a076-4d40-835f-a740d8d905df 0000:46:00.0 nvidia-313 GRID V100D-16C foresight-vm-5-node-01
@@ -248,7 +251,7 @@ eb4fe85a-05d0-4f80-97e9-c099388387ba 0000:47:00.0 nvidia-312 GRID V100D-8C  fore
 The output can be limited to the PCI-addresses specified by the `-p` or `--pci-address` option in the same way as in the `list-used-pci` command. Use `-m` or `--mdev-type` to restrict output to devices of the specified vGPU type:
 
 ```
-$ nvidia-dev-ctl.py list-used-mdev -c qemu:///system -m nvidia-312
+$ nvidia-dev-ctl.py -c qemu:///system list-used-mdev -m nvidia-312
 MDEV_DEVICE_UUID                     PCI_ADDRESS  TYPE       NAME          VM_NAME
 eb4fe85a-05d0-4f80-97e9-c099388387ba 0000:47:00.0 nvidia-312 GRID V100D-8C foresight-vm-6-node-01
 ```
@@ -256,7 +259,7 @@ eb4fe85a-05d0-4f80-97e9-c099388387ba 0000:47:00.0 nvidia-312 GRID V100D-8C fores
 If the `-O` or `--output-all` option is specified, the number of vGPU instances still available and the vGPU device description are also output.
 
 ```
-$ nvidia-dev-ctl.py list-used-mdev -c qemu:///system --output-all
+$ nvidia-dev-ctl.py -c qemu:///system list-used-mdev --output-all
 MDEV_DEVICE_UUID                     PCI_ADDRESS  TYPE       NAME           AVAILABLE_INSTANCES DESCRIPTION                                                                              VM_NAME
 80129abf-2c41-4fa7-8280-84866112f31c 0000:43:00.0 nvidia-313 GRID V100D-16C 0                   num_heads=1, frl_config=60, framebuffer=16384M, max_resolution=4096x2160, max_instance=2 foresight-vm-1-node-01
 45217cc2-a076-4d40-835f-a740d8d905df 0000:46:00.0 nvidia-313 GRID V100D-16C 0                   num_heads=1, frl_config=60, framebuffer=16384M, max_resolution=4096x2160, max_instance=2 foresight-vm-5-node-01
@@ -268,13 +271,11 @@ eb4fe85a-05d0-4f80-97e9-c099388387ba 0000:47:00.0 nvidia-312 GRID V100D-8C  3   
 All `list-used-mdev` command options:
 
 ```
-usage: nvidia-dev-ctl.py list-used-mdev [-h] [-c URL] [-p PCI_ADDRESSES]
+usage: nvidia-dev-ctl.py list-used-mdev [-h] [-p PCI_ADDRESSES]
                                         [-m MDEV_TYPES] [-o {table,text}] [-O]
 
 optional arguments:
   -h, --help            show this help message and exit
-  -c URL, --connection URL
-                        virsh connection URL
   -p PCI_ADDRESSES, --pci-address PCI_ADDRESSES
                         show only devices with specified pci addresses
   -m MDEV_TYPES, --mdev-type MDEV_TYPES

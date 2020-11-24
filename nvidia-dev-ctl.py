@@ -23,6 +23,7 @@ import argparse
 import logging
 import os
 import os.path
+import grp
 import subprocess
 from subprocess import CalledProcessError
 import sys
@@ -1699,6 +1700,16 @@ def restart_services(args):
 def main():
     global DEV_CTL, PCI_DEVICES
 
+    default_virsh_connection = None
+    # Smart logic to get default libvirt connection
+    user_groups = [grp.getgrgid(g).gr_name for g in os.getgroups()]
+    if (
+        not os.getenv("LIBVIRT_DEFAULT_URI", None)
+        and not os.getenv("VIRSH_DEFAULT_CONNECT_URI", None)
+        and ("libvirtd" in user_groups or "libvirt" in user_groups or "kvm" in user_groups)
+    ):
+        default_virsh_connection = "qemu:///system"
+
     parser = argparse.ArgumentParser(
         description="NVIDIA Device Control", formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
@@ -1710,6 +1721,9 @@ def main():
         dest="loglevel",
         default="WARNING",
         help="log level (use one of CRITICAL,ERROR,WARNING,INFO,DEBUG)",
+    )
+    parser.add_argument(
+        "-c", "--connection", metavar="URL", help="virsh connection URL", default=default_virsh_connection
     )
     parser.add_argument("-w", "--wait", help="wait until mdev bus is available", action="store_true")
     parser.add_argument(
@@ -1770,7 +1784,6 @@ def main():
     register_list_mdev_args(list_mdev_p)
 
     list_used_pci_p = subparsers.add_parser("list-used-pci", help="list used NVIDIA PCI devices")
-    list_used_pci_p.add_argument("-c", "--connection", metavar="URL", help="virsh connection URL")
     list_used_pci_p.add_argument(
         "-p",
         "--pci-address",
@@ -1790,7 +1803,6 @@ def main():
     list_used_pci_p.set_defaults(func=list_used_pci)
 
     list_used_mdev_p = subparsers.add_parser("list-used-mdev", help="list used mdev devices")
-    list_used_mdev_p.add_argument("-c", "--connection", metavar="URL", help="virsh connection URL")
     list_used_mdev_p.add_argument(
         "-p",
         "--pci-address",
@@ -1897,7 +1909,6 @@ def main():
     attach_mdev_p = subparsers.add_parser("attach-mdev", help="attach mdev device to virsh domain (virtual machine)")
     attach_mdev_p.add_argument("mdev_uuid", metavar="UUID", help="UUID of the mdev device to remove")
     attach_mdev_p.add_argument("domain", metavar="DOMAIN", help="domain name, id or uuid")
-    attach_mdev_p.add_argument("-c", "--connection", metavar="URL", help="virsh connection URL")
     attach_mdev_p.add_argument(
         "--hotplug", help="affect the running domain and keep changes after reboot", action="store_true"
     )
@@ -1912,7 +1923,6 @@ def main():
     detach_mdev_p = subparsers.add_parser("detach-mdev", help="detach mdev device from virsh domain (virtual machine)")
     detach_mdev_p.add_argument("mdev_uuid", metavar="UUID", help="UUID of the mdev device to remove")
     detach_mdev_p.add_argument("domain", metavar="DOMAIN", help="domain name, id or uuid")
-    detach_mdev_p.add_argument("-c", "--connection", metavar="URL", help="virsh connection URL")
     detach_mdev_p.add_argument(
         "--hotplug", help="affect the running domain and keep changes after reboot", action="store_true"
     )
@@ -1927,7 +1937,6 @@ def main():
     attach_pci_p = subparsers.add_parser("attach-pci", help="attach pci device to virsh domain (virtual machine)")
     attach_pci_p.add_argument("pci_address", metavar="PCI_ADDRESS", help="PCI address of the NVIDIA device to attach")
     attach_pci_p.add_argument("domain", metavar="DOMAIN", help="domain name, id or uuid")
-    attach_pci_p.add_argument("-c", "--connection", metavar="URL", help="virsh connection URL")
     attach_pci_p.add_argument(
         "--hotplug", help="affect the running domain and keep changes after reboot", action="store_true"
     )
@@ -1942,7 +1951,6 @@ def main():
     detach_pci_p = subparsers.add_parser("detach-pci", help="detach pci device from virsh domain (virtual machine)")
     detach_pci_p.add_argument("pci_address", metavar="PCI_ADDRESS", help="PCI address of the NVIDIA device to attach")
     detach_pci_p.add_argument("domain", metavar="DOMAIN", help="domain name, id or uuid")
-    detach_pci_p.add_argument("-c", "--connection", metavar="URL", help="virsh connection URL")
     detach_pci_p.add_argument(
         "--hotplug", help="affect the running domain and keep changes after reboot", action="store_true"
     )
@@ -1972,6 +1980,11 @@ def main():
         )
     else:
         logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=numeric_level)
+
+    if default_virsh_connection:
+        LOG.info("Selected default URI for the virsh connection: %s", default_virsh_connection)
+    if args.connection != default_virsh_connection:
+        LOG.info("The user set the URI of the virsh connection to: %s", args.connection)
 
     args = parser.parse_args()
 
