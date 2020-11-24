@@ -181,7 +181,11 @@ class PCIAddress(namedtuple("PCIAddress", ["domain", "bus", "slot", "function"])
         )
 
 
-class PCIDevice(NamedTuple("PCIDevice", [("pci_address", PCIAddress), ("name", str), ("vendor", str), ("tags", dict)])):
+class PCIDevice(
+    NamedTuple(
+        "PCIDevice", [("pci_address", PCIAddress), ("driver", str), ("name", str), ("vendor", str), ("tags", dict)]
+    )
+):
     __slots__ = ()
 
     def get_tag(self, tag_name, default=None):
@@ -196,7 +200,15 @@ class PCIDevice(NamedTuple("PCIDevice", [("pci_address", PCIAddress), ("name", s
             raise InvalidPCIAddressError('No "Slot" tag in the lspci output')
         name = tags.get("Device", "")
         vendor = tags.get("Vendor", "")
-        return cls(pci_address=pci_address, name=name, vendor=vendor, tags=tags)
+
+        try:
+            driver_name = get_driver_of_pci_device(pci_address)
+        except NoPCIAddressError:
+            driver_name = "no device"
+        except DeviceDriverPathNotFound:
+            driver_name = "no driver"
+
+        return cls(pci_address=pci_address, driver=driver_name, name=name, vendor=vendor, tags=tags)
 
 
 class PCIDevices(object):
@@ -393,7 +405,7 @@ def get_driver_of_pci_device(
 ):
     if not pci_device_address:
         raise NoPCIAddressError(pci_device_address)
-    device_path = sysfs_pci_device_path(pci_device_address)
+    device_path = sysfs_pci_device_path(str(pci_device_address))
     driver_path = os.path.join(device_path, "driver")
     if path_waiter:
         path_waiter(driver_path)
@@ -855,11 +867,7 @@ class DevCtl:
 
             pci_device = PCI_DEVICES.find_device(pci_address)
 
-            pci_devices_tbl.append(
-                column_filter(
-                    (pci_address, pci_device.name, driver_name, device_path)
-                )
-            )
+            pci_devices_tbl.append(column_filter((pci_address, pci_device.name, driver_name, device_path)))
 
         if output_format == TABLE_FORMAT:
             print_table(pci_devices_tbl)
@@ -1556,8 +1564,124 @@ class DevCtl:
             self.restart_domain(domain, dry_run=dry_run)
         return True
 
+    def print_all_devices(
+        self,
+        pci_addresses_filter,
+        mdev_types_filter,
+        output_format=TEXT_FORMAT,
+        output_all_columns=False,
+        virsh_connection="qemu:///system",
+    ):
+        global PCI_DEVICES
+
+        def column_filter(row):
+            if output_all_columns:
+                return row
+            else:
+                return row[0], row[1], row[2], row[3], row[4], row[8]
+
+        devices_tbl_header = column_filter(
+            (
+                "PCI_ADDRESS",
+                "DEVICE",
+                "DEVICE_DRIVER",
+                "MDEV_UUID",
+                "MDEV_NAME",
+                "MDEV_TYPE",
+                "AVAILABLE_INSTANCES",
+                "DESCRIPTION",
+                "VM_NAME",
+            )
+        )
+
+        devices_tbl = []
+
+        pci_address_to_domain = {
+            used_pci_device.pci_device.pci_address: used_pci_device.domain
+            for used_pci_device in self.get_used_pci_devices(
+                pci_addresses_filter=pci_addresses_filter, virsh_connection=virsh_connection
+            )
+        }
+
+        mdev_uuid_to_domain = {
+            used_mdev_device.mdev_device.uuid: used_mdev_device.domain
+            for used_mdev_device in self.get_used_mdev_devices(
+                pci_addresses_filter=pci_addresses_filter,
+                mdev_types_filter=mdev_types_filter,
+                virsh_connection=virsh_connection,
+            )
+        }
+
+        for pci_address, device_path in each_pci_device_address_and_path(
+            vendor=NVIDIA_VENDOR, path_waiter=self.wait_for_device_path
+        ):
+            if pci_addresses_filter and pci_address not in pci_addresses_filter:
+                continue
+
+            pci_device = PCI_DEVICES.find_device(pci_address)
+
+            domain = pci_address_to_domain.get(pci_device.pci_address, "")
+
+            devices_tbl.append(
+                column_filter((pci_address, pci_device.name, pci_device.driver, "", "", "", "", "", domain))
+            )
+
+        try:
+            for mdev_device in self.mdev_devices.values():
+                if pci_addresses_filter and mdev_device.pci_address not in pci_addresses_filter:
+                    continue
+                if mdev_types_filter and mdev_device.mdev_type.type not in mdev_types_filter:
+                    continue
+
+                pci_device = PCI_DEVICES.find_device(mdev_device.pci_address)
+
+                domain = mdev_uuid_to_domain.get(
+                    mdev_device.uuid, mdev_device.nvidia.vm_name if mdev_device.nvidia else "none"
+                )
+
+                devices_tbl.append(
+                    column_filter(
+                        (
+                            mdev_device.pci_address,
+                            pci_device.name,
+                            pci_device.driver,
+                            mdev_device.uuid,
+                            mdev_device.mdev_type.name,
+                            mdev_device.mdev_type.type,
+                            mdev_device.mdev_type.available_instances,
+                            mdev_device.mdev_type.description,
+                            domain,
+                        )
+                    )
+                )
+        except FileNotFoundError as e:
+            if not e.filename.startswith(MDEV_BUS_DEVICE_PATH):
+                raise
+
+        devices_tbl.sort(key=lambda entry: entry[0])
+
+        devices_tbl = [devices_tbl_header] + devices_tbl
+
+        if output_format == TABLE_FORMAT:
+            print_table(devices_tbl)
+        else:
+            # text format
+            print(" ".join([i[0] for i in devices_tbl[1:]]))
+        return True
+
 
 DEV_CTL: Optional[DevCtl] = None
+
+
+def list_all(args):
+    result = DEV_CTL.print_all_devices(
+        pci_addresses_filter=args.pci_addresses,
+        mdev_types_filter=args.mdev_types,
+        output_format=args.output_format,
+        output_all_columns=args.output_all,
+        virsh_connection=args.connection,
+    )
+    return 0 if result else 1
 
 
 def list_pci(args):
@@ -1800,10 +1924,36 @@ def main():
         argparser.add_argument("-O", "--output-all", help="output all columns", action="store_true")
         argparser.set_defaults(func=list_mdev)
 
-    parser.set_defaults(subcommand="list-pci")
-    register_list_pci_args(parser)
+    def register_list_all_args(argparser):
+        argparser.add_argument(
+            "-p",
+            "--pci-address",
+            help="show only devices with specified pci addresses",
+            action="append",
+            dest="pci_addresses",
+        )
+        argparser.add_argument(
+            "-m", "--mdev-type", help="show only devices with specified mdev types", action="append", dest="mdev_types",
+        )
+        argparser.add_argument(
+            "-o",
+            "--output",
+            type=str,
+            help="output format",
+            choices=["table", "text"],
+            default="table",
+            dest="output_format",
+        )
+        argparser.add_argument("-O", "--output-all", help="output all columns", action="store_true")
+        argparser.set_defaults(func=list_all)
+
+    parser.set_defaults(subcommand="list-all")
+    register_list_all_args(parser)
 
     subparsers = parser.add_subparsers(title="subcommands", dest="subcommand", metavar="")
+
+    list_all_p = subparsers.add_parser("list-all", help="list all NVIDIA devices")
+    register_list_all_args(list_all_p)
 
     list_pci_p = subparsers.add_parser("list-pci", help="list NVIDIA PCI devices")
     register_list_pci_args(list_pci_p)
