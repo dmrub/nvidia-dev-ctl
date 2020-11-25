@@ -30,7 +30,7 @@ import sys
 import time
 import re
 from collections import OrderedDict, defaultdict, namedtuple
-from typing import Callable, Optional, Sequence, Union, NamedTuple
+from typing import Callable, Optional, Sequence, List, Union, NamedTuple
 import uuid
 import tempfile
 import xml.etree.ElementTree as ET
@@ -222,7 +222,7 @@ class PCIDevices(object):
             pci_address = PCIAddress.parse(pci_address)
         return [dev for dev in self.devices if dev.pci_address == pci_address]
 
-    def find_device(self, pci_address: Union[str, PCIAddress]):
+    def find_device(self, pci_address: Union[str, PCIAddress]) -> "Optional[PCIDevice]":
         if not isinstance(pci_address, PCIAddress):
             pci_address = PCIAddress.parse(pci_address)
         for dev in self.devices:
@@ -436,7 +436,9 @@ def bind_driver_to_pci_devices(
         )
         if current_driver_name == driver_name:
             LOG.info(
-                "Do not change the driver on the device %s, because it already has driver %s", dev, driver_name,
+                "Do not change the driver on the device %s, because it already has driver %s",
+                dev,
+                driver_name,
             )
             continue
         if current_driver_name != "":
@@ -916,7 +918,10 @@ class DevCtl:
                 for mdev_device in mdev_devices:
                     output_file.write(
                         "{}\t{}\t{}\t{}\n".format(
-                            pci_address, driver_name, mdev_device.uuid, mdev_device.mdev_type.type,
+                            pci_address,
+                            driver_name,
+                            mdev_device.uuid,
+                            mdev_device.mdev_type.type,
                         )
                     )
                 del mdev_devices_by_pci_address[pci_address]
@@ -983,7 +988,11 @@ class DevCtl:
         return bind_driver_to_pci_devices(driver, devices, path_waiter=self.wait_for_device_path, dry_run=dry_run)
 
     def unbind_driver(
-        self, driver=None, devices: Optional[Sequence[str]] = None, ignore_others=False, dry_run=False,
+        self,
+        driver=None,
+        devices: Optional[Sequence[str]] = None,
+        ignore_others=False,
+        dry_run=False,
     ):
         if not devices:
             return False
@@ -1004,7 +1013,10 @@ class DevCtl:
             else:
                 device_driver = get_driver_of_pci_device(device, path_waiter=self.wait_for_device_path)
             unbind_driver_from_pci_devices(
-                device_driver, [device], path_waiter=self.wait_for_device_path, dry_run=dry_run,
+                device_driver,
+                [device],
+                path_waiter=self.wait_for_device_path,
+                dry_run=dry_run,
             )
         return True
 
@@ -1033,7 +1045,8 @@ class DevCtl:
         mdev_device = self.mdev_devices.get(mdev_uuid)
         if mdev_device:
             LOG.warning(
-                "Ignore Mdev device with UUID %s because it is already registered", mdev_uuid,
+                "Ignore Mdev device with UUID %s because it is already registered",
+                mdev_uuid,
             )
             return True
         mdev_device_class = self.mdev_device_classes.get(pci_address)
@@ -1209,10 +1222,11 @@ class DevCtl:
             if not domain_running:
                 raise DevCtlException("Could not start domain %s", domain)
 
-    def get_used_pci_devices(self, pci_addresses_filter, use_cache=False):
+    def get_used_pci_devices(self, pci_addresses_filter, use_cache=False) -> "Sequence[UsedPCIDevice]":
         global PCI_DEVICES
+        assert PCI_DEVICES is not None
 
-        used_pci_devices = []
+        used_pci_devices: List[UsedPCIDevice] = []
 
         all_domains = self.list_all_domains(use_cache=use_cache)
         for domain in all_domains:
@@ -1221,25 +1235,25 @@ class DevCtl:
             for pci_hostdev in root.findall("./devices/hostdev[@type='pci']"):
                 if pci_hostdev.attrib.get("mode") == "subsystem":
                     for address in pci_hostdev.findall("./source/address"):
-                        pci_domain = address.attrib.get("domain")
-                        pci_bus = address.attrib.get("bus")
-                        pci_slot = address.attrib.get("slot")
-                        pci_function = address.attrib.get("function")
-                        if not (pci_domain and pci_bus and pci_slot and pci_function):
+                        pci_domain_str = address.attrib.get("domain")
+                        pci_bus_str = address.attrib.get("bus")
+                        pci_slot_str = address.attrib.get("slot")
+                        pci_function_str = address.attrib.get("function")
+                        if not (pci_domain_str and pci_bus_str and pci_slot_str and pci_function_str):
                             continue
-                        pci_domain = int(pci_domain, 0)
-                        pci_bus = int(pci_bus, 0)
-                        pci_slot = int(pci_slot, 0)
-                        pci_function = int(pci_function, 0)
+                        pci_domain = int(pci_domain_str, 0)
+                        pci_bus = int(pci_bus_str, 0)
+                        pci_slot = int(pci_slot_str, 0)
+                        pci_function = int(pci_function_str, 0)
                         pci_address_obj = PCIAddress(pci_domain, pci_bus, pci_slot, pci_function)
                         pci_address = str(pci_address_obj)
                         if pci_addresses_filter and pci_address not in pci_addresses_filter:
                             continue
 
                         pci_device = PCI_DEVICES.find_device(pci_address_obj)
-
-                        device = UsedPCIDevice(pci_device, domain)
-                        used_pci_devices.append(device)
+                        if pci_device is not None:
+                            device = UsedPCIDevice(pci_device, domain)
+                            used_pci_devices.append(device)
         return used_pci_devices
 
     def print_used_pci_devices(self, pci_addresses_filter, output_format=TEXT_FORMAT):
@@ -1257,8 +1271,11 @@ class DevCtl:
             print(" ".join([i[0] for i in used_pci_devices_tbl[1:]]))
         return True
 
-    def get_used_mdev_devices(self, pci_addresses_filter, mdev_types_filter, use_cache=False):
+    def get_used_mdev_devices(
+        self, pci_addresses_filter, mdev_types_filter, use_cache=False
+    ) -> "Sequence[UsedMdevDevice]":
         global PCI_DEVICES
+        assert PCI_DEVICES is not None
 
         used_mdev_devices = []
 
@@ -1285,9 +1302,9 @@ class DevCtl:
                                 continue
 
                             pci_device = PCI_DEVICES.find_device(mdev_device.pci_address)
-
-                            device = UsedMdevDevice(mdev_device=mdev_device, pci_device=pci_device, domain=domain)
-                            used_mdev_devices.append(device)
+                            if pci_device is not None:
+                                device = UsedMdevDevice(mdev_device=mdev_device, pci_device=pci_device, domain=domain)
+                                used_mdev_devices.append(device)
         return used_mdev_devices
 
     def print_used_mdev_devices(
@@ -1339,7 +1356,12 @@ class DevCtl:
         return True
 
     def attach_mdev(
-        self, mdev_uuid: str, domain: str, hotplug=False, restart=False, dry_run=False,
+        self,
+        mdev_uuid: str,
+        domain: str,
+        hotplug=False,
+        restart=False,
+        dry_run=False,
     ):
         if restart and hotplug:
             LOG.error("restart and hotplug options cannot be used simultaneously")
@@ -1392,7 +1414,12 @@ class DevCtl:
         return True
 
     def detach_mdev(
-        self, mdev_uuid: str, domain: str, hotplug=False, restart=False, dry_run=False,
+        self,
+        mdev_uuid: str,
+        domain: str,
+        hotplug=False,
+        restart=False,
+        dry_run=False,
     ):
         if restart and hotplug:
             LOG.error("restart and hotplug options cannot be used simultaneously")
@@ -1444,7 +1471,12 @@ class DevCtl:
         return True
 
     def attach_pci(
-        self, pci_address: str, domain: str, hotplug=False, restart=False, dry_run=False,
+        self,
+        pci_address: str,
+        domain: str,
+        hotplug=False,
+        restart=False,
+        dry_run=False,
     ):
         if restart and hotplug:
             LOG.error("restart and hotplug options cannot be used simultaneously")
@@ -1503,7 +1535,12 @@ class DevCtl:
         return True
 
     def detach_pci(
-        self, pci_address: str, domain: str, hotplug=False, restart=False, dry_run=False,
+        self,
+        pci_address: str,
+        domain: str,
+        hotplug=False,
+        restart=False,
+        dry_run=False,
     ):
         if restart and hotplug:
             LOG.error("restart and hotplug options cannot be used simultaneously")
@@ -1584,17 +1621,19 @@ class DevCtl:
 
         devices_tbl = []
 
-        pci_address_to_domain = {
-            used_pci_device.pci_device.pci_address: used_pci_device.domain
-            for used_pci_device in self.get_used_pci_devices(pci_addresses_filter=pci_addresses_filter, use_cache=True)
-        }
+        pci_address_to_domain = defaultdict(set)
+        for used_pci_device in self.get_used_pci_devices(pci_addresses_filter=pci_addresses_filter, use_cache=True):
+            pci_address_to_domain[used_pci_device.pci_device.pci_address].add(used_pci_device.domain)
 
-        mdev_uuid_to_domain = {
-            used_mdev_device.mdev_device.uuid: used_mdev_device.domain
+        mdev_uuid_to_domain = defaultdict(set)
+        try:
             for used_mdev_device in self.get_used_mdev_devices(
                 pci_addresses_filter=pci_addresses_filter, mdev_types_filter=mdev_types_filter, use_cache=True
-            )
-        }
+            ):
+                mdev_uuid_to_domain[used_mdev_device.mdev_device.uuid].add(used_mdev_device.domain)
+        except FileNotFoundError as e:
+            if not e.filename.startswith(MDEV_BUS_DEVICE_PATH):
+                raise
 
         for pci_address, device_path in each_pci_device_address_and_path(
             vendor=NVIDIA_VENDOR, path_waiter=self.wait_for_device_path
@@ -1604,11 +1643,14 @@ class DevCtl:
 
             pci_device = PCI_DEVICES.find_device(pci_address)
 
-            domain = pci_address_to_domain.get(pci_device.pci_address, "")
+            domains = pci_address_to_domain[pci_device.pci_address]
+            if not domains:
+                domains = set([""])
 
-            devices_tbl.append(
-                column_filter((pci_address, pci_device.name, pci_device.driver, "", "", "", "", "", domain))
-            )
+            for domain in domains:
+                devices_tbl.append(
+                    column_filter((pci_address, pci_device.name, pci_device.driver, "", "", "", "", "", domain))
+                )
 
         try:
             for mdev_device in self.mdev_devices.values():
@@ -1619,25 +1661,27 @@ class DevCtl:
 
                 pci_device = PCI_DEVICES.find_device(mdev_device.pci_address)
 
-                domain = mdev_uuid_to_domain.get(
-                    mdev_device.uuid, mdev_device.nvidia.vm_name if mdev_device.nvidia else "none"
-                )
+                domains = mdev_uuid_to_domain[mdev_device.uuid]
 
-                devices_tbl.append(
-                    column_filter(
-                        (
-                            mdev_device.pci_address,
-                            pci_device.name,
-                            pci_device.driver,
-                            mdev_device.uuid,
-                            mdev_device.mdev_type.name,
-                            mdev_device.mdev_type.type,
-                            mdev_device.mdev_type.available_instances,
-                            mdev_device.mdev_type.description,
-                            domain,
+                if not domains:
+                    domains = set([mdev_device.nvidia.vm_name or ""])
+
+                for domain in domains:
+                    devices_tbl.append(
+                        column_filter(
+                            (
+                                mdev_device.pci_address,
+                                pci_device.name,
+                                pci_device.driver,
+                                mdev_device.uuid,
+                                mdev_device.mdev_type.name,
+                                mdev_device.mdev_type.type,
+                                mdev_device.mdev_type.available_instances,
+                                mdev_device.mdev_type.description,
+                                domain,
+                            )
                         )
                     )
-                )
         except FileNotFoundError as e:
             if not e.filename.startswith(MDEV_BUS_DEVICE_PATH):
                 raise
@@ -1651,7 +1695,97 @@ class DevCtl:
         else:
             # text format
             print(" ".join([i[0] for i in devices_tbl[1:]]))
+
+        self.validate_configuration(pci_addresses_filter=pci_addresses_filter, mdev_types_filter=mdev_types_filter)
+
         return True
+
+    def validate_configuration(self, pci_addresses_filter, mdev_types_filter):
+
+        result = True
+
+        pci_address_to_domain = defaultdict(set)
+        for used_pci_device in self.get_used_pci_devices(pci_addresses_filter=pci_addresses_filter, use_cache=True):
+            pci_address_to_domain[used_pci_device.pci_device.pci_address].add(used_pci_device.domain)
+
+        mdev_uuid_to_domain = defaultdict(set)
+        try:
+            for used_mdev_device in self.get_used_mdev_devices(
+                pci_addresses_filter=pci_addresses_filter, mdev_types_filter=mdev_types_filter, use_cache=True
+            ):
+                mdev_uuid_to_domain[used_mdev_device.mdev_device.uuid].add(used_mdev_device.domain)
+        except FileNotFoundError as e:
+            if not e.filename.startswith(MDEV_BUS_DEVICE_PATH):
+                raise
+
+        for pci_address, device_path in each_pci_device_address_and_path(
+            vendor=NVIDIA_VENDOR, path_waiter=self.wait_for_device_path
+        ):
+            if pci_addresses_filter and pci_address not in pci_addresses_filter:
+                continue
+
+            pci_device = PCI_DEVICES.find_device(pci_address)
+
+            domains = pci_address_to_domain[pci_device.pci_address]
+
+            for domain in domains:
+                if domain and pci_device.driver != "vfio-pci":
+                    LOG.warning(
+                        "GPU %s with PCI address %s is used by VM %s, but has %s driver instead of vfio-pci",
+                        pci_device.name,
+                        pci_address,
+                        domain,
+                        pci_device.driver,
+                    )
+                    result = False
+
+            if len(domains) > 1:
+                LOG.warning(
+                    "GPU %s with PCI address %s is used by more than one VMs: %s",
+                    pci_device.name,
+                    pci_address,
+                    ", ".join(domains),
+                )
+
+        try:
+            for mdev_device in self.mdev_devices.values():
+                if pci_addresses_filter and mdev_device.pci_address not in pci_addresses_filter:
+                    continue
+                if mdev_types_filter and mdev_device.mdev_type.type not in mdev_types_filter:
+                    continue
+
+                pci_device = PCI_DEVICES.find_device(mdev_device.pci_address)
+
+                domains = mdev_uuid_to_domain[mdev_device.uuid]
+
+                if not domains and mdev_device.nvidia:
+                    domains = set([mdev_device.nvidia.vm_name])
+
+                for domain in domains:
+                    if domain and pci_device.driver != "nvidia":
+                        LOG.warning(
+                            "GPU %s with PCI address %s has vGPU (MDEV) with UUID %s, but has %s driver instead of "
+                            "nvidia",
+                            pci_device.name,
+                            mdev_device.pci_address,
+                            mdev_device.uuid,
+                            pci_device.driver,
+                        )
+                        result = False
+
+                if len(domains) > 1:
+                    LOG.warning(
+                        "GPU %s with PCI address %s has vGPU (MDEV) with UUID %s but is used by more than one VMs %s",
+                        pci_device.name,
+                        mdev_device.pci_address,
+                        mdev_device.uuid,
+                        ", ".join(domains),
+                    )
+        except FileNotFoundError as e:
+            if not e.filename.startswith(MDEV_BUS_DEVICE_PATH):
+                raise
+
+        return result
 
 
 DEV_CTL: Optional[DevCtl] = None
@@ -1741,7 +1875,10 @@ def bind_driver(args):
 
 def unbind_driver(args):
     if DEV_CTL.unbind_driver(
-        driver=args.driver, devices=args.devices, ignore_others=args.ignore_others, dry_run=args.dry_run,
+        driver=args.driver,
+        devices=args.devices,
+        ignore_others=args.ignore_others,
+        dry_run=args.dry_run,
     ):
         return 0
     else:
@@ -1750,7 +1887,10 @@ def unbind_driver(args):
 
 def create_mdev(args):
     mdev_uuid = DEV_CTL.create_mdev(
-        pci_address=args.pci_address, mdev_type_name=args.mdev_type, mdev_uuid=args.mdev_uuid, dry_run=args.dry_run,
+        pci_address=args.pci_address,
+        mdev_type_name=args.mdev_type,
+        mdev_uuid=args.mdev_uuid,
+        dry_run=args.dry_run,
     )
     if mdev_uuid:
         print(mdev_uuid)
@@ -1768,7 +1908,11 @@ def remove_mdev(args):
 
 def attach_mdev(args):
     if DEV_CTL.attach_mdev(
-        mdev_uuid=args.mdev_uuid, domain=args.domain, hotplug=args.hotplug, restart=args.restart, dry_run=args.dry_run,
+        mdev_uuid=args.mdev_uuid,
+        domain=args.domain,
+        hotplug=args.hotplug,
+        restart=args.restart,
+        dry_run=args.dry_run,
     ):
         return 0
     else:
@@ -1777,7 +1921,11 @@ def attach_mdev(args):
 
 def detach_mdev(args):
     if DEV_CTL.detach_mdev(
-        mdev_uuid=args.mdev_uuid, domain=args.domain, hotplug=args.hotplug, restart=args.restart, dry_run=args.dry_run,
+        mdev_uuid=args.mdev_uuid,
+        domain=args.domain,
+        hotplug=args.hotplug,
+        restart=args.restart,
+        dry_run=args.dry_run,
     ):
         return 0
     else:
@@ -1847,7 +1995,11 @@ def main():
     )
     parser.add_argument("-w", "--wait", help="wait until mdev bus is available", action="store_true")
     parser.add_argument(
-        "--trials", type=int, default=3, metavar="N", help="number of trials if waiting for device",
+        "--trials",
+        type=int,
+        default=3,
+        metavar="N",
+        help="number of trials if waiting for device",
     )
     parser.add_argument(
         "--delay",
@@ -1887,7 +2039,11 @@ def main():
             dest="pci_addresses",
         )
         argparser.add_argument(
-            "-m", "--mdev-type", help="show only devices with specified mdev types", action="append", dest="mdev_types",
+            "-m",
+            "--mdev-type",
+            help="show only devices with specified mdev types",
+            action="append",
+            dest="mdev_types",
         )
         argparser.add_argument("-O", "--output-all", help="output all columns", action="store_true")
         argparser.set_defaults(func=list_mdev)
@@ -1901,7 +2057,11 @@ def main():
             dest="pci_addresses",
         )
         argparser.add_argument(
-            "-m", "--mdev-type", help="show only devices with specified mdev types", action="append", dest="mdev_types",
+            "-m",
+            "--mdev-type",
+            help="show only devices with specified mdev types",
+            action="append",
+            dest="mdev_types",
         )
         argparser.add_argument(
             "-o",
@@ -1957,7 +2117,11 @@ def main():
         dest="pci_addresses",
     )
     list_used_mdev_p.add_argument(
-        "-m", "--mdev-type", help="show only devices with specified mdev types", action="append", dest="mdev_types",
+        "-m",
+        "--mdev-type",
+        help="show only devices with specified mdev types",
+        action="append",
+        dest="mdev_types",
     )
     list_used_mdev_p.add_argument(
         "-o",
@@ -1973,7 +2137,9 @@ def main():
 
     create_mdev_p = subparsers.add_parser("create-mdev", help="create new mdev device")
     create_mdev_p.add_argument(
-        "pci_address", metavar="PCI_ADDRESS", help="PCI address of the NVIDIA device where to create new mdev device",
+        "pci_address",
+        metavar="PCI_ADDRESS",
+        help="PCI address of the NVIDIA device where to create new mdev device",
     )
     create_mdev_p.add_argument("mdev_type", metavar="MDEV_TYPE", help="mdev device type")
     create_mdev_p.add_argument(
@@ -1984,14 +2150,20 @@ def main():
         help="UUID of the mdev device, if not specified a new will be automatically generated",
     )
     create_mdev_p.add_argument(
-        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
+        "-n",
+        "--dry-run",
+        help="Do everything except actually make changes",
+        action="store_true",
     )
     create_mdev_p.set_defaults(func=create_mdev)
 
     remove_mdev_p = subparsers.add_parser("remove-mdev", help="remove mdev device")
     remove_mdev_p.add_argument("mdev_uuid", metavar="UUID", help="UUID of the mdev device to remove")
     remove_mdev_p.add_argument(
-        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
+        "-n",
+        "--dry-run",
+        help="Do everything except actually make changes",
+        action="store_true",
     )
     remove_mdev_p.set_defaults(func=remove_mdev)
 
@@ -2018,14 +2190,20 @@ def main():
         dest="input_file",
     )
     restore_p.add_argument(
-        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
+        "-n",
+        "--dry-run",
+        help="Do everything except actually make changes",
+        action="store_true",
     )
     restore_p.set_defaults(func=restore_config)
 
     bind_driver_p = subparsers.add_parser("bind-driver", help="bind driver to devices")
     bind_driver_p.add_argument("driver", metavar="DRIVER", help="bind driver to devices")
     bind_driver_p.add_argument(
-        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
+        "-n",
+        "--dry-run",
+        help="Do everything except actually make changes",
+        action="store_true",
     )
     bind_driver_p.add_argument("devices", metavar="PCI_ADDRESS", type=str, nargs="+", help="device PCI address")
     bind_driver_p.set_defaults(func=bind_driver)
@@ -2038,17 +2216,26 @@ def main():
         help="unbind driver from devices (if not specified unbind any bound driver)",
     )
     unbind_driver_p.add_argument(
-        "-i", "--ignore-others", help="unbind only specified driver and ignore others", action="store_true",
+        "-i",
+        "--ignore-others",
+        help="unbind only specified driver and ignore others",
+        action="store_true",
     )
     unbind_driver_p.add_argument(
-        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
+        "-n",
+        "--dry-run",
+        help="Do everything except actually make changes",
+        action="store_true",
     )
     unbind_driver_p.add_argument("devices", metavar="PCI_ADDRESS", type=str, nargs="+", help="device PCI address")
     unbind_driver_p.set_defaults(func=unbind_driver)
 
     restart_services_p = subparsers.add_parser("restart-services", help="restart NVIDIA services")
     restart_services_p.add_argument(
-        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
+        "-n",
+        "--dry-run",
+        help="Do everything except actually make changes",
+        action="store_true",
     )
     restart_services_p.set_defaults(func=restart_services)
 
@@ -2062,7 +2249,10 @@ def main():
         "--restart", help="shutdown and reboot the domain after the changes are made", action="store_true"
     )
     attach_mdev_p.add_argument(
-        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
+        "-n",
+        "--dry-run",
+        help="Do everything except actually make changes",
+        action="store_true",
     )
     attach_mdev_p.set_defaults(func=attach_mdev)
 
@@ -2076,7 +2266,10 @@ def main():
         "--restart", help="shutdown and reboot the domain after the changes are made", action="store_true"
     )
     detach_mdev_p.add_argument(
-        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
+        "-n",
+        "--dry-run",
+        help="Do everything except actually make changes",
+        action="store_true",
     )
     detach_mdev_p.set_defaults(func=detach_mdev)
 
@@ -2090,7 +2283,10 @@ def main():
         "--restart", help="shutdown and reboot the domain after the changes are made", action="store_true"
     )
     attach_pci_p.add_argument(
-        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
+        "-n",
+        "--dry-run",
+        help="Do everything except actually make changes",
+        action="store_true",
     )
     attach_pci_p.set_defaults(func=attach_pci)
 
@@ -2104,7 +2300,10 @@ def main():
         "--restart", help="shutdown and reboot the domain after the changes are made", action="store_true"
     )
     detach_pci_p.add_argument(
-        "-n", "--dry-run", help="Do everything except actually make changes", action="store_true",
+        "-n",
+        "--dry-run",
+        help="Do everything except actually make changes",
+        action="store_true",
     )
     detach_pci_p.set_defaults(func=detach_pci)
 
@@ -2122,7 +2321,8 @@ def main():
 
     if debug_mode:
         logging.basicConfig(
-            format="%(asctime)s %(levelname)s %(pathname)s:%(lineno)s: %(message)s", level=numeric_level,
+            format="%(asctime)s %(levelname)s %(pathname)s:%(lineno)s: %(message)s",
+            level=numeric_level,
         )
     else:
         logging.basicConfig(format="%(asctime)s %(levelname)s %(message)s", level=numeric_level)
@@ -2155,7 +2355,8 @@ def main():
         return 1
     except PermissionError:
         LOG.exception(
-            "Could not execute %s command, try to run this command as root", args.subcommand,
+            "Could not execute %s command, try to run this command as root",
+            args.subcommand,
         )
         return 1
 
