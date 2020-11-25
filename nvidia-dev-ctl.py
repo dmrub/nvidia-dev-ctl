@@ -724,6 +724,8 @@ class DevCtl:
         self.num_trials = num_trials
         self.wait_delay = wait_delay
         self.virsh_connection = virsh_connection
+        self._virsh_list_all_cache = None
+        self._virsh_dumpxml_cache = {}
         self.dry_run = dry_run
         self.debug = debug
         self._mdev_device_classes: Optional[
@@ -1134,9 +1136,28 @@ class DevCtl:
         output = subprocess.check_output(virsh_command).decode("utf-8")
         return output
 
-    def list_all_domains(self):
+    def list_all_domains(self, use_cache=False):
+        if use_cache and self._virsh_list_all_cache:
+            return self._virsh_list_all_cache
         output = self.run_virsh(("list", "--all", "--name"))
-        return [line for line in output.splitlines() if len(line) > 0]
+        result = [line for line in output.splitlines() if len(line) > 0]
+        if use_cache:
+            self._virsh_list_all_cache = result
+        else:
+            self._virsh_list_all_cache = None
+        return result
+
+    def dumpxml_of_domain(self, domain_name, use_cache=False):
+        if use_cache:
+            result = self._virsh_dumpxml_cache.get(domain_name, None)
+            if result is not None:
+                return result
+        result = self.run_virsh(("dumpxml", "--domain", domain_name))
+        if use_cache:
+            self._virsh_dumpxml_cache[domain_name] = result
+        else:
+            self._virsh_dumpxml_cache.pop(domain_name, None)
+        return result
 
     def get_domain_state(self, domain: str):
         output = self.run_virsh(["dominfo", domain])
@@ -1188,14 +1209,14 @@ class DevCtl:
             if not domain_running:
                 raise DevCtlException("Could not start domain %s", domain)
 
-    def get_used_pci_devices(self, pci_addresses_filter):
+    def get_used_pci_devices(self, pci_addresses_filter, use_cache=False):
         global PCI_DEVICES
 
         used_pci_devices = []
 
-        all_domains = self.list_all_domains()
+        all_domains = self.list_all_domains(use_cache=use_cache)
         for domain in all_domains:
-            xml = self.run_virsh(("dumpxml", "--domain", domain))
+            xml = self.dumpxml_of_domain(domain, use_cache=use_cache)
             root = ET.fromstring(xml)
             for pci_hostdev in root.findall("./devices/hostdev[@type='pci']"):
                 if pci_hostdev.attrib.get("mode") == "subsystem":
@@ -1236,14 +1257,14 @@ class DevCtl:
             print(" ".join([i[0] for i in used_pci_devices_tbl[1:]]))
         return True
 
-    def get_used_mdev_devices(self, pci_addresses_filter, mdev_types_filter):
+    def get_used_mdev_devices(self, pci_addresses_filter, mdev_types_filter, use_cache=False):
         global PCI_DEVICES
 
         used_mdev_devices = []
 
-        all_domains = self.list_all_domains()
+        all_domains = self.list_all_domains(use_cache=use_cache)
         for domain in all_domains:
-            xml = self.run_virsh(("dumpxml", "--domain", domain))
+            xml = self.dumpxml_of_domain(domain, use_cache=use_cache)
             root = ET.fromstring(xml)
             for pci_hostdev in root.findall("./devices/hostdev[@type='mdev']"):
                 if (
@@ -1565,13 +1586,13 @@ class DevCtl:
 
         pci_address_to_domain = {
             used_pci_device.pci_device.pci_address: used_pci_device.domain
-            for used_pci_device in self.get_used_pci_devices(pci_addresses_filter=pci_addresses_filter)
+            for used_pci_device in self.get_used_pci_devices(pci_addresses_filter=pci_addresses_filter, use_cache=True)
         }
 
         mdev_uuid_to_domain = {
             used_mdev_device.mdev_device.uuid: used_mdev_device.domain
             for used_mdev_device in self.get_used_mdev_devices(
-                pci_addresses_filter=pci_addresses_filter, mdev_types_filter=mdev_types_filter
+                pci_addresses_filter=pci_addresses_filter, mdev_types_filter=mdev_types_filter, use_cache=True
             )
         }
 
