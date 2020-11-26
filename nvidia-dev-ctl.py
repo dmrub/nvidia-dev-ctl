@@ -778,7 +778,11 @@ class DevCtl:
         return self._mdev_devices
 
     def print_mdev_device_classes(
-        self, pci_address_filter: PCIAddressFilterCB, mdev_type_filter: MdevTypeFilterCB, output_all_columns=False
+        self,
+        pci_address_filter: PCIAddressFilterCB,
+        mdev_type_filter: MdevTypeFilterCB,
+        all_classes=False,
+        output_all_columns=False,
     ):
         def column_filter(row):
             if output_all_columns:
@@ -806,18 +810,19 @@ class DevCtl:
             for mdev_type in mdev_device_class.supported_mdev_types.values():
                 if mdev_type_filter and not mdev_type_filter(mdev_type):
                     continue
-                mdev_types.append(
-                    column_filter(
-                        (
-                            mdev_device_class.pci_address,
-                            mdev_type.type,
-                            mdev_type.name,
-                            mdev_type.available_instances,
-                            mdev_type.description,
-                            mdev_device_class.path,
+                if mdev_type.available_instances is not None and mdev_type.available_instances > 0 or all_classes:
+                    mdev_types.append(
+                        column_filter(
+                            (
+                                mdev_device_class.pci_address,
+                                mdev_type.type,
+                                mdev_type.name,
+                                mdev_type.available_instances,
+                                mdev_type.description,
+                                mdev_device_class.path,
+                            )
                         )
                     )
-                )
 
         print_table(mdev_types)
         return True
@@ -1889,10 +1894,11 @@ def list_mdev(args):
         return mdev_type.type in args.mdev_types
 
     try:
-        if args.classes:
+        if args.classes or args.all_classes:
             result = DEV_CTL.print_mdev_device_classes(
                 pci_address_filter=pci_address_filter,
                 mdev_type_filter=mdev_type_filter,
+                all_classes=args.all_classes,
                 output_all_columns=args.output_all,
             )
         else:
@@ -2138,6 +2144,7 @@ def main():
             action="append",
             dest="mdev_types",
         )
+        argparser.add_argument("-a", "--all-classes", help="print all mdev device classes", action="store_true")
         argparser.add_argument("-O", "--output-all", help="output all columns", action="store_true")
         argparser.set_defaults(func=list_mdev)
 
