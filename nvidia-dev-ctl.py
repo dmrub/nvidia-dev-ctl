@@ -181,6 +181,10 @@ class PCIAddress(namedtuple("PCIAddress", ["domain", "bus", "slot", "function"])
         )
 
 
+PCIAddressFilterFunc = Callable[[PCIAddress], bool]
+PCIAddressFilterCB = Optional[PCIAddressFilterFunc]
+
+
 class PCIDevice(
     NamedTuple(
         "PCIDevice", [("pci_address", PCIAddress), ("driver", str), ("name", str), ("vendor", str), ("tags", dict)]
@@ -209,6 +213,10 @@ class PCIDevice(
             driver_name = "no driver"
 
         return cls(pci_address=pci_address, driver=driver_name, name=name, vendor=vendor, tags=tags)
+
+
+PCIDeviceFilterFunc = Callable[[PCIDevice], bool]
+PCIDeviceFilterCB = Optional[PCIDeviceFilterFunc]
 
 
 class PCIDevices(object):
@@ -570,6 +578,10 @@ class MdevType:
         return cls(path, path_waiter=path_waiter)
 
 
+MdevTypeFilterFunc = Callable[[MdevType], bool]
+MdevTypeFilterCB = Optional[MdevTypeFilterFunc]
+
+
 class MdevDeviceClass:
     def __init__(self, pci_address, path, path_waiter: PathWaiterCB = None):
         self.pci_address = pci_address  # PCI address
@@ -765,7 +777,9 @@ class DevCtl:
                 self._mdev_devices[mdev_uuid] = MdevDevice.from_uuid_unchecked(mdev_uuid)
         return self._mdev_devices
 
-    def print_mdev_device_classes(self, pci_addresses_filter, mdev_types_filter, output_all_columns=False):
+    def print_mdev_device_classes(
+        self, pci_address_filter: PCIAddressFilterCB, mdev_type_filter: MdevTypeFilterCB, output_all_columns=False
+    ):
         def column_filter(row):
             if output_all_columns:
                 return row
@@ -785,29 +799,34 @@ class DevCtl:
             )
         ]
         for mdev_device_class in self.mdev_device_classes.values():
-            if pci_addresses_filter and mdev_device_class.pci_address not in pci_addresses_filter:
+            pci_address_obj = PCIAddress.parse(mdev_device_class.pci_address)
+            if pci_address_filter and not pci_address_filter(pci_address_obj):
                 continue
 
             for mdev_type in mdev_device_class.supported_mdev_types.values():
-                if not mdev_types_filter or mdev_type.type in mdev_types_filter:
-                    mdev_types.append(
-                        column_filter(
-                            (
-                                mdev_device_class.pci_address,
-                                mdev_type.type,
-                                mdev_type.name,
-                                mdev_type.available_instances,
-                                mdev_type.description,
-                                mdev_device_class.path,
-                            )
+                if mdev_type_filter and not mdev_type_filter(mdev_type):
+                    continue
+                mdev_types.append(
+                    column_filter(
+                        (
+                            mdev_device_class.pci_address,
+                            mdev_type.type,
+                            mdev_type.name,
+                            mdev_type.available_instances,
+                            mdev_type.description,
+                            mdev_device_class.path,
                         )
                     )
+                )
 
         print_table(mdev_types)
         return True
 
-    def print_mdev_devices(self, pci_addresses_filter, mdev_types_filter, output_all_columns=False):
+    def print_mdev_devices(
+        self, pci_address_filter: PCIAddressFilterCB, mdev_type_filter: MdevTypeFilterCB, output_all_columns=False
+    ):
         global PCI_DEVICES
+        assert PCI_DEVICES is not None
 
         def column_filter(row):
             if output_all_columns:
@@ -830,33 +849,38 @@ class DevCtl:
             )
         ]
         for mdev_device in self.mdev_devices.values():
-            if pci_addresses_filter and mdev_device.pci_address not in pci_addresses_filter:
+            pci_address_obj = PCIAddress.parse(mdev_device.pci_address)
+            if pci_address_filter and not pci_address_filter(pci_address_obj):
                 continue
-            if mdev_types_filter and mdev_device.mdev_type.type not in mdev_types_filter:
+            if mdev_type_filter and not mdev_type_filter(mdev_device.mdev_type):
                 continue
 
             pci_device = PCI_DEVICES.find_device(mdev_device.pci_address)
 
-            mdev_devices_tbl.append(
-                column_filter(
-                    (
-                        mdev_device.uuid,
-                        mdev_device.pci_address,
-                        pci_device.name,
-                        mdev_device.mdev_type.type,
-                        mdev_device.mdev_type.name,
-                        mdev_device.mdev_type.available_instances,
-                        mdev_device.mdev_type.description,
-                        mdev_device.nvidia.vm_name if mdev_device.nvidia else "none",
+            if pci_device is not None:
+                mdev_devices_tbl.append(
+                    column_filter(
+                        (
+                            mdev_device.uuid,
+                            mdev_device.pci_address,
+                            pci_device.name,
+                            mdev_device.mdev_type.type,
+                            mdev_device.mdev_type.name,
+                            mdev_device.mdev_type.available_instances,
+                            mdev_device.mdev_type.description,
+                            mdev_device.nvidia.vm_name if mdev_device.nvidia else "none",
+                        )
                     )
                 )
-            )
 
         print_table(mdev_devices_tbl)
         return True
 
-    def print_pci_devices(self, pci_addresses_filter, output_format=TEXT_FORMAT, output_all_columns=False):
+    def print_pci_devices(
+        self, pci_address_filter: PCIAddressFilterCB, output_format=TEXT_FORMAT, output_all_columns=False
+    ):
         global PCI_DEVICES
+        assert PCI_DEVICES is not None
 
         def column_filter(row):
             if output_all_columns:
@@ -869,7 +893,8 @@ class DevCtl:
         for pci_address, device_path in each_pci_device_address_and_path(
             vendor=NVIDIA_VENDOR, path_waiter=self.wait_for_device_path
         ):
-            if pci_addresses_filter and pci_address not in pci_addresses_filter:
+            pci_address_obj = PCIAddress.parse(pci_address)
+            if pci_address_filter and not pci_address_filter(pci_address_obj):
                 continue
             try:
                 driver_name = get_driver_of_pci_device(pci_address)
@@ -879,8 +904,8 @@ class DevCtl:
                 driver_name = "no driver"
 
             pci_device = PCI_DEVICES.find_device(pci_address)
-
-            pci_devices_tbl.append(column_filter((pci_address, pci_device.name, driver_name, device_path)))
+            if pci_device is not None:
+                pci_devices_tbl.append(column_filter((pci_address, pci_device.name, driver_name, device_path)))
 
         if output_format == TABLE_FORMAT:
             print_table(pci_devices_tbl)
@@ -1222,7 +1247,9 @@ class DevCtl:
             if not domain_running:
                 raise DevCtlException("Could not start domain %s", domain)
 
-    def get_used_pci_devices(self, pci_addresses_filter, use_cache=False) -> "Sequence[UsedPCIDevice]":
+    def get_used_pci_devices(
+        self, pci_address_filter: PCIAddressFilterCB, use_cache=False
+    ) -> "Sequence[UsedPCIDevice]":
         global PCI_DEVICES
         assert PCI_DEVICES is not None
 
@@ -1246,8 +1273,8 @@ class DevCtl:
                         pci_slot = int(pci_slot_str, 0)
                         pci_function = int(pci_function_str, 0)
                         pci_address_obj = PCIAddress(pci_domain, pci_bus, pci_slot, pci_function)
-                        pci_address = str(pci_address_obj)
-                        if pci_addresses_filter and pci_address not in pci_addresses_filter:
+
+                        if pci_address_filter and not pci_address_filter(pci_address_obj):
                             continue
 
                         pci_device = PCI_DEVICES.find_device(pci_address_obj)
@@ -1256,13 +1283,13 @@ class DevCtl:
                             used_pci_devices.append(device)
         return used_pci_devices
 
-    def print_used_pci_devices(self, pci_addresses_filter, output_format=TEXT_FORMAT):
+    def print_used_pci_devices(self, pci_address_filter: PCIAddressFilterCB, output_format=TEXT_FORMAT):
         used_pci_devices_tbl = [("PCI_ADDRESS", "DEVICE", "VM_NAME")]
 
-        used_pci_devices = self.get_used_pci_devices(pci_addresses_filter=pci_addresses_filter)
+        used_pci_devices = self.get_used_pci_devices(pci_address_filter=pci_address_filter)
         for used_pci_device in used_pci_devices:
             used_pci_devices_tbl.append(
-                (used_pci_device.pci_device.pci_address, used_pci_device.pci_device.name, used_pci_device.domain)
+                (str(used_pci_device.pci_device.pci_address), used_pci_device.pci_device.name, used_pci_device.domain)
             )
         if output_format == TABLE_FORMAT:
             print_table(used_pci_devices_tbl)
@@ -1272,7 +1299,7 @@ class DevCtl:
         return True
 
     def get_used_mdev_devices(
-        self, pci_addresses_filter, mdev_types_filter, use_cache=False
+        self, pci_address_filter: PCIAddressFilterCB, mdev_type_filter: MdevTypeFilterCB, use_cache=False
     ) -> "Sequence[UsedMdevDevice]":
         global PCI_DEVICES
         assert PCI_DEVICES is not None
@@ -1296,9 +1323,10 @@ class DevCtl:
                             continue
                         mdev_device = self.mdev_devices.get(mdev_uuid)
                         if mdev_device:
-                            if pci_addresses_filter and mdev_device.pci_address not in pci_addresses_filter:
+                            pci_address_obj = PCIAddress.parse(mdev_device.pci_address)
+                            if pci_address_filter and not pci_address_filter(pci_address_obj):
                                 continue
-                            if mdev_types_filter and mdev_device.mdev_type.type not in mdev_types_filter:
+                            if mdev_type_filter and not mdev_type_filter(mdev_device.mdev_type):
                                 continue
 
                             pci_device = PCI_DEVICES.find_device(mdev_device.pci_address)
@@ -1308,7 +1336,11 @@ class DevCtl:
         return used_mdev_devices
 
     def print_used_mdev_devices(
-        self, pci_addresses_filter, mdev_types_filter, output_format=TEXT_FORMAT, output_all_columns=False
+        self,
+        pci_address_filter: PCIAddressFilterCB,
+        mdev_type_filter: MdevTypeFilterCB,
+        output_format=TEXT_FORMAT,
+        output_all_columns=False,
     ):
         def column_filter(row):
             if output_all_columns:
@@ -1332,7 +1364,7 @@ class DevCtl:
         ]
 
         used_mdev_devices = self.get_used_mdev_devices(
-            pci_addresses_filter=pci_addresses_filter, mdev_types_filter=mdev_types_filter
+            pci_address_filter=pci_address_filter, mdev_type_filter=mdev_type_filter
         )
 
         for used_mdev_device in used_mdev_devices:
@@ -1595,9 +1627,14 @@ class DevCtl:
         return True
 
     def print_all_devices(
-        self, pci_addresses_filter, mdev_types_filter, output_format=TEXT_FORMAT, output_all_columns=False
+        self,
+        pci_address_filter: PCIAddressFilterCB,
+        mdev_type_filter: MdevTypeFilterCB,
+        output_format=TEXT_FORMAT,
+        output_all_columns=False,
     ):
         global PCI_DEVICES
+        assert PCI_DEVICES is not None
 
         def column_filter(row):
             if output_all_columns:
@@ -1622,13 +1659,13 @@ class DevCtl:
         devices_tbl = []
 
         pci_address_to_domain = defaultdict(set)
-        for used_pci_device in self.get_used_pci_devices(pci_addresses_filter=pci_addresses_filter, use_cache=True):
+        for used_pci_device in self.get_used_pci_devices(pci_address_filter=pci_address_filter, use_cache=True):
             pci_address_to_domain[used_pci_device.pci_device.pci_address].add(used_pci_device.domain)
 
         mdev_uuid_to_domain = defaultdict(set)
         try:
             for used_mdev_device in self.get_used_mdev_devices(
-                pci_addresses_filter=pci_addresses_filter, mdev_types_filter=mdev_types_filter, use_cache=True
+                pci_address_filter=pci_address_filter, mdev_type_filter=mdev_type_filter, use_cache=True
             ):
                 mdev_uuid_to_domain[used_mdev_device.mdev_device.uuid].add(used_mdev_device.domain)
         except FileNotFoundError as e:
@@ -1638,50 +1675,55 @@ class DevCtl:
         for pci_address, device_path in each_pci_device_address_and_path(
             vendor=NVIDIA_VENDOR, path_waiter=self.wait_for_device_path
         ):
-            if pci_addresses_filter and pci_address not in pci_addresses_filter:
+            pci_address_obj = PCIAddress.parse(pci_address)
+
+            if pci_address_filter and not pci_address_filter(pci_address_obj):
                 continue
 
             pci_device = PCI_DEVICES.find_device(pci_address)
+            if pci_device is not None:
+                domains = pci_address_to_domain[pci_device.pci_address]
+                if not domains:
+                    domains = set([""])
 
-            domains = pci_address_to_domain[pci_device.pci_address]
-            if not domains:
-                domains = set([""])
-
-            for domain in domains:
-                devices_tbl.append(
-                    column_filter((pci_address, pci_device.name, pci_device.driver, "", "", "", "", "", domain))
-                )
+                for domain in domains:
+                    devices_tbl.append(
+                        column_filter((pci_address, pci_device.name, pci_device.driver, "", "", "", "", "", domain))
+                    )
 
         try:
             for mdev_device in self.mdev_devices.values():
-                if pci_addresses_filter and mdev_device.pci_address not in pci_addresses_filter:
+                pci_address_obj = PCIAddress.parse(mdev_device.pci_address)
+
+                if pci_address_filter and not pci_address_filter(pci_address_obj):
                     continue
-                if mdev_types_filter and mdev_device.mdev_type.type not in mdev_types_filter:
+                if mdev_type_filter and not mdev_type_filter(mdev_device.mdev_type):
                     continue
 
                 pci_device = PCI_DEVICES.find_device(mdev_device.pci_address)
 
-                domains = mdev_uuid_to_domain[mdev_device.uuid]
+                if pci_device is not None:
+                    domains = mdev_uuid_to_domain[mdev_device.uuid]
 
-                if not domains:
-                    domains = set([mdev_device.nvidia.vm_name or ""])
+                    if not domains:
+                        domains = set([mdev_device.nvidia.vm_name or ""])
 
-                for domain in domains:
-                    devices_tbl.append(
-                        column_filter(
-                            (
-                                mdev_device.pci_address,
-                                pci_device.name,
-                                pci_device.driver,
-                                mdev_device.uuid,
-                                mdev_device.mdev_type.name,
-                                mdev_device.mdev_type.type,
-                                mdev_device.mdev_type.available_instances,
-                                mdev_device.mdev_type.description,
-                                domain,
+                    for domain in domains:
+                        devices_tbl.append(
+                            column_filter(
+                                (
+                                    mdev_device.pci_address,
+                                    pci_device.name,
+                                    pci_device.driver,
+                                    mdev_device.uuid,
+                                    mdev_device.mdev_type.name,
+                                    mdev_device.mdev_type.type,
+                                    mdev_device.mdev_type.available_instances,
+                                    mdev_device.mdev_type.description,
+                                    domain,
+                                )
                             )
                         )
-                    )
         except FileNotFoundError as e:
             if not e.filename.startswith(MDEV_BUS_DEVICE_PATH):
                 raise
@@ -1696,22 +1738,28 @@ class DevCtl:
             # text format
             print(" ".join([i[0] for i in devices_tbl[1:]]))
 
-        self.validate_configuration(pci_addresses_filter=pci_addresses_filter, mdev_types_filter=mdev_types_filter)
+        self.validate_configuration(pci_address_filter=pci_address_filter, mdev_type_filter=mdev_type_filter)
 
         return True
 
-    def validate_configuration(self, pci_addresses_filter, mdev_types_filter):
+    def validate_configuration(
+        self,
+        pci_address_filter: PCIAddressFilterCB,
+        mdev_type_filter: MdevTypeFilterCB,
+    ):
+        global PCI_DEVICES
+        assert PCI_DEVICES is not None
 
         result = True
 
         pci_address_to_domain = defaultdict(set)
-        for used_pci_device in self.get_used_pci_devices(pci_addresses_filter=pci_addresses_filter, use_cache=True):
+        for used_pci_device in self.get_used_pci_devices(pci_address_filter=pci_address_filter, use_cache=True):
             pci_address_to_domain[used_pci_device.pci_device.pci_address].add(used_pci_device.domain)
 
         mdev_uuid_to_domain = defaultdict(set)
         try:
             for used_mdev_device in self.get_used_mdev_devices(
-                pci_addresses_filter=pci_addresses_filter, mdev_types_filter=mdev_types_filter, use_cache=True
+                pci_address_filter=pci_address_filter, mdev_type_filter=mdev_type_filter, use_cache=True
             ):
                 mdev_uuid_to_domain[used_mdev_device.mdev_device.uuid].add(used_mdev_device.domain)
         except FileNotFoundError as e:
@@ -1721,66 +1769,70 @@ class DevCtl:
         for pci_address, device_path in each_pci_device_address_and_path(
             vendor=NVIDIA_VENDOR, path_waiter=self.wait_for_device_path
         ):
-            if pci_addresses_filter and pci_address not in pci_addresses_filter:
+            pci_address_obj = PCIAddress.parse(pci_address)
+
+            if pci_address_filter and not pci_address_filter(pci_address_obj):
                 continue
 
             pci_device = PCI_DEVICES.find_device(pci_address)
-
-            domains = pci_address_to_domain[pci_device.pci_address]
-
-            for domain in domains:
-                if domain and pci_device.driver != "vfio-pci":
-                    LOG.warning(
-                        "GPU %s with PCI address %s is used by VM %s, but has %s driver instead of vfio-pci",
-                        pci_device.name,
-                        pci_address,
-                        domain,
-                        pci_device.driver,
-                    )
-                    result = False
-
-            if len(domains) > 1:
-                LOG.warning(
-                    "GPU %s with PCI address %s is used by more than one VMs: %s",
-                    pci_device.name,
-                    pci_address,
-                    ", ".join(domains),
-                )
-
-        try:
-            for mdev_device in self.mdev_devices.values():
-                if pci_addresses_filter and mdev_device.pci_address not in pci_addresses_filter:
-                    continue
-                if mdev_types_filter and mdev_device.mdev_type.type not in mdev_types_filter:
-                    continue
-
-                pci_device = PCI_DEVICES.find_device(mdev_device.pci_address)
-
-                domains = mdev_uuid_to_domain[mdev_device.uuid]
-
-                if not domains and mdev_device.nvidia:
-                    domains = set([mdev_device.nvidia.vm_name])
+            if pci_device is not None:
+                domains = pci_address_to_domain[pci_device.pci_address]
 
                 for domain in domains:
-                    if domain and pci_device.driver != "nvidia":
+                    if domain and pci_device.driver != "vfio-pci":
                         LOG.warning(
-                            "GPU %s with PCI address %s has vGPU (MDEV) with UUID %s, but has %s driver instead of "
-                            "nvidia",
+                            "GPU %s with PCI address %s is used by VM %s, but has %s driver instead of vfio-pci",
                             pci_device.name,
-                            mdev_device.pci_address,
-                            mdev_device.uuid,
+                            pci_address,
+                            domain,
                             pci_device.driver,
                         )
                         result = False
 
                 if len(domains) > 1:
                     LOG.warning(
-                        "GPU %s with PCI address %s has vGPU (MDEV) with UUID %s but is used by more than one VMs %s",
+                        "GPU %s with PCI address %s is used by more than one VMs: %s",
                         pci_device.name,
-                        mdev_device.pci_address,
-                        mdev_device.uuid,
+                        pci_address,
                         ", ".join(domains),
                     )
+
+        try:
+            for mdev_device in self.mdev_devices.values():
+                pci_address_obj = PCIAddress.parse(mdev_device.pci_address)
+                if pci_address_filter and not pci_address_filter(pci_address_obj):
+                    continue
+                if mdev_type_filter and not mdev_type_filter(mdev_device.mdev_type):
+                    continue
+
+                pci_device = PCI_DEVICES.find_device(mdev_device.pci_address)
+                if pci_device is not None:
+                    domains = mdev_uuid_to_domain[mdev_device.uuid]
+
+                    if not domains and mdev_device.nvidia:
+                        domains = set([mdev_device.nvidia.vm_name])
+
+                    for domain in domains:
+                        if domain and pci_device.driver != "nvidia":
+                            LOG.warning(
+                                "GPU %s with PCI address %s has vGPU (MDEV) with UUID %s, but has %s driver instead of "
+                                "nvidia",
+                                pci_device.name,
+                                mdev_device.pci_address,
+                                mdev_device.uuid,
+                                pci_device.driver,
+                            )
+                            result = False
+
+                    if len(domains) > 1:
+                        LOG.warning(
+                            "GPU %s with PCI address %s has vGPU (MDEV) with UUID %s but is used by more than one VMs "
+                            "%s",
+                            pci_device.name,
+                            mdev_device.pci_address,
+                            mdev_device.uuid,
+                            ", ".join(domains),
+                        )
         except FileNotFoundError as e:
             if not e.filename.startswith(MDEV_BUS_DEVICE_PATH):
                 raise
@@ -1792,9 +1844,19 @@ DEV_CTL: Optional[DevCtl] = None
 
 
 def list_all(args):
+    def pci_address_filter(pci_address: PCIAddress) -> bool:
+        if not args.pci_addresses:
+            return True
+        return str(pci_address) in args.pci_addresses
+
+    def mdev_type_filter(mdev_type: MdevType) -> bool:
+        if not args.mdev_types:
+            return True
+        return mdev_type.type in args.mdev_types
+
     result = DEV_CTL.print_all_devices(
-        pci_addresses_filter=args.pci_addresses,
-        mdev_types_filter=args.mdev_types,
+        pci_address_filter=pci_address_filter,
+        mdev_type_filter=mdev_type_filter,
         output_format=args.output_format,
         output_all_columns=args.output_all,
     )
@@ -1802,25 +1864,41 @@ def list_all(args):
 
 
 def list_pci(args):
+    def pci_address_filter(pci_address: PCIAddress) -> bool:
+        if not args.pci_addresses:
+            return True
+        return str(pci_address) in args.pci_addresses
+
     result = DEV_CTL.print_pci_devices(
-        pci_addresses_filter=args.pci_addresses, output_format=args.output_format, output_all_columns=args.output_all
+        pci_address_filter=pci_address_filter, output_format=args.output_format, output_all_columns=args.output_all
     )
     return 0 if result else 1
 
 
 def list_mdev(args):
     result = False
+
+    def pci_address_filter(pci_address: PCIAddress) -> bool:
+        if not args.pci_addresses:
+            return True
+        return str(pci_address) in args.pci_addresses
+
+    def mdev_type_filter(mdev_type: MdevType) -> bool:
+        if not args.mdev_types:
+            return True
+        return mdev_type.type in args.mdev_types
+
     try:
         if args.classes:
             result = DEV_CTL.print_mdev_device_classes(
-                pci_addresses_filter=args.pci_addresses,
-                mdev_types_filter=args.mdev_types,
+                pci_address_filter=pci_address_filter,
+                mdev_type_filter=mdev_type_filter,
                 output_all_columns=args.output_all,
             )
         else:
             result = DEV_CTL.print_mdev_devices(
-                pci_addresses_filter=args.pci_addresses,
-                mdev_types_filter=args.mdev_types,
+                pci_address_filter=pci_address_filter,
+                mdev_type_filter=mdev_type_filter,
                 output_all_columns=args.output_all,
             )
     except FileNotFoundError as e:
@@ -1834,16 +1912,31 @@ def list_mdev(args):
 
 
 def list_used_pci(args):
-    if DEV_CTL.print_used_pci_devices(pci_addresses_filter=args.pci_addresses, output_format=args.output_format):
+    def pci_address_filter(pci_address: PCIAddress) -> bool:
+        if not args.pci_addresses:
+            return True
+        return str(pci_address) in args.pci_addresses
+
+    if DEV_CTL.print_used_pci_devices(pci_address_filter=pci_address_filter, output_format=args.output_format):
         return 0
     else:
         return 1
 
 
 def list_used_mdev(args):
+    def pci_address_filter(pci_address: PCIAddress) -> bool:
+        if not args.pci_addresses:
+            return True
+        return str(pci_address) in args.pci_addresses
+
+    def mdev_type_filter(mdev_type: MdevType) -> bool:
+        if not args.mdev_types:
+            return True
+        return mdev_type.type in args.mdev_types
+
     if DEV_CTL.print_used_mdev_devices(
-        pci_addresses_filter=args.pci_addresses,
-        mdev_types_filter=args.mdev_types,
+        pci_address_filter=pci_address_filter,
+        mdev_type_filter=mdev_type_filter,
         output_format=args.output_format,
         output_all_columns=args.output_all,
     ):
