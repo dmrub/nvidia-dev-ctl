@@ -736,8 +736,8 @@ class DevCtl:
         self._mdev_devices: Optional[OrderedDict[str, MdevDevice]] = None  # maps UUID to MdevDevice
 
     def wait_for_device_path(self, device_path):
-        LOG.debug("wait_for_device_path(%r)", device_path)  # ??? DEBUG
         if self.wait_for_device:
+            LOG.debug("wait_for_device_path(%r)", device_path)  # ??? DEBUG
             w = PathWaiter(device_path, num_trials=self.num_trials, wait_delay=self.wait_delay)
             result = w.wait()
             del w
@@ -1145,7 +1145,7 @@ class DevCtl:
             virsh_command.append("-c")
             virsh_command.append(self.virsh_connection)
         virsh_command.extend(args)
-        LOG.info("Run: %s", " ".join(virsh_command))
+        LOG.debug("Run: %s", " ".join(virsh_command))
         output = subprocess.check_output(virsh_command).decode("utf-8")
         return output
 
@@ -1391,7 +1391,7 @@ class DevCtl:
                 """.format(
                     mdev_uuid
                 )
-                LOG.info("XML device file: %s", dev_xml)
+                LOG.debug("XML device file: %s", dev_xml)
                 tmp_dev.write(dev_xml)
                 dev_fname = tmp_dev.name
 
@@ -1448,7 +1448,7 @@ class DevCtl:
                 """.format(
                     mdev_uuid
                 )
-                LOG.info("XML device file: %s", dev_xml)
+                LOG.debug("XML device file: %s", dev_xml)
                 tmp_dev.write(dev_xml)
                 dev_fname = tmp_dev.name
 
@@ -1512,7 +1512,7 @@ class DevCtl:
                 """.format(
                     pci_address_obj.domain, pci_address_obj.bus, pci_address_obj.slot, pci_address_obj.function
                 )
-                LOG.info("XML device file: %s", dev_xml)
+                LOG.debug("XML device file: %s", dev_xml)
                 tmp_dev.write(dev_xml)
                 dev_fname = tmp_dev.name
 
@@ -1572,7 +1572,7 @@ class DevCtl:
                 """.format(
                     pci_address_obj.domain, pci_address_obj.bus, pci_address_obj.slot, pci_address_obj.function
                 )
-                LOG.info("XML device file: %s", dev_xml)
+                LOG.debug("XML device file: %s", dev_xml)
                 tmp_dev.write(dev_xml)
                 dev_fname = tmp_dev.name
 

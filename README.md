@@ -290,7 +290,7 @@ optional arguments:
 The `create-mdev` command is used to create a new vGPU by specifying the PCI address and MDEV type and optionally the UUID of the new vGPU. If no UUID is specified, it will be generated automatically. The UUID is printed if the operation was successful. In the following example we create a vGPU of type `nvidia-312` (named `GRID V100D-8C`) on PCI device `0000:47:00` :
 
 ```
-$ sudo nvidia-dev-ctl.py create-mdev 0000:47:00.0 nvidia-312
+$ sudo nvidia-dev-ctl.py -l INFO create-mdev 0000:47:00.0 nvidia-312
 2020-10-14 19:15:10,396 INFO Do not change the driver on the device 0000:47:00.0, because it already has driver nvidia
 2020-10-14 19:15:10,408 INFO Create Mdev device with UUID 5569c457-a0eb-448a-93b4-a15c5322243f and type nvidia-312 on PCI device with address 0000:47:00.0
 2020-10-14 19:15:10,409 INFO Found device class <MdevDeviceClass pci_address='0000:47:00.0' path='/sys/class/mdev_bus/0000:47:00.0' supported_mdev_types=['nvidia-180', 'nvidia-181', 'nvidia-182', 'nvidia-183', 'nvidia-184', 'nvidia-185', 'nvidia-186', 'nvidia-187', 'nvidia-188', 'nvidia-189', 'nvidia-190', 'nvidia-191', 'nvidia-192', 'nvidia-193', 'nvidia-218', 'nvidia-249', 'nvidia-311', 'nvidia-312', 'nvidia-313', 'nvidia-314']>
@@ -331,7 +331,7 @@ optional arguments:
 The `remove-mdev` command does the opposite of the `create-mdev` command by deleting the mdev device specified with its UUID:
 
 ```
-$ sudo nvidia-dev-ctl.py remove-mdev  5569c457-a0eb-448a-93b4-a15c5322243f
+$ sudo nvidia-dev-ctl.py -l INFO remove-mdev  5569c457-a0eb-448a-93b4-a15c5322243f
 2020-10-14 22:02:54,093 INFO Remove mdev device with UUID 5569c457-a0eb-448a-93b4-a15c5322243f on PCI address 0000:47:00.0 and with type nvidia-312
 ```
 
@@ -447,7 +447,7 @@ $ nvidia-dev-ctl.py list-pci -p 0000:83:00.0
 PCI_ADDRESS  DEVICE_DRIVER PCI_DEVICE_PATH
 0000:83:00.0 vfio-pci      /sys/bus/pci/devices/0000:83:00.0
 
-$ sudo nvidia-dev-ctl.py bind-driver nvidia 0000:83:00.0
+$ sudo nvidia-dev-ctl.py -l INFO bind-driver nvidia 0000:83:00.0
 2020-10-15 09:28:27,063 INFO Unbind driver vfio-pci from PCI device 0000:83:00.0
 2020-10-15 09:28:27,064 INFO Override driver nvidia for PCI device 0000:83:00.0
 2020-10-15 09:28:27,064 INFO Bind driver nvidia to device 0000:83:00.0
@@ -478,7 +478,7 @@ The `unbind-driver` command does the opposite to the `bind-driver` by unbinding 
 Without specifying the name of the driver with the `-d` or `--driver` option, the command will unbind any driver bound to the device from the specified devices:
 
 ```
-$ sudo nvidia-dev-ctl.py unbind-driver 0000:83:00.0
+$ sudo nvidia-dev-ctl.py -l INFO unbind-driver 0000:83:00.0
 2020-10-15 09:35:39,374 INFO Unbind driver vfio-pci from PCI device 0000:83:00.0
 
 $ nvidia-dev-ctl.py list-pci -p 0000:83:00.0
