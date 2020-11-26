@@ -312,12 +312,13 @@ With the `-n` or `--dry` option, the command does not make any changes.
 All `create-mdev` command options:
 
 ```
-usage: nvidia-dev-ctl.py create-mdev [-h] [-u UUID] [-n] PCI_ADDRESS MDEV_TYPE
+usage: nvidia-dev-ctl.py create-mdev [-h] [-u UUID] [-n]
+                                     PCI_ADDRESS MDEV_TYPE_OR_NAME
 
 positional arguments:
   PCI_ADDRESS           PCI address of the NVIDIA device where to create new
                         mdev device
-  MDEV_TYPE             mdev device type
+  MDEV_TYPE_OR_NAME     mdev device type or type name
 
 optional arguments:
   -h, --help            show this help message and exit

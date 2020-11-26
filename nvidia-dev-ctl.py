@@ -589,6 +589,15 @@ class MdevDeviceClass:
         self.path_waiter = path_waiter
         self._supported_mdev_types: Optional[OrderedDict[str, MdevType]] = None  # maps mdev_type to MdevType
 
+    def find_supported_mdev_type(self, name_or_type: str):
+        mdev_type = self.supported_mdev_types.get(name_or_type)
+        if mdev_type:
+            return mdev_type
+        for mdev_type in self.supported_mdev_types.values():
+            if mdev_type.name == name_or_type:
+                return mdev_type
+        return None
+
     @property
     def supported_mdev_types(self) -> "OrderedDict[str, MdevType]":
         if self._supported_mdev_types is None:
@@ -1084,7 +1093,7 @@ class DevCtl:
             LOG.error("Mdev device class with PCI address %s does not exist", pci_address)
             return False
         LOG.info("Found device class %s", mdev_device_class)
-        mdev_type = mdev_device_class.supported_mdev_types.get(mdev_type_name)
+        mdev_type = mdev_device_class.find_supported_mdev_type(mdev_type_name)
         if not mdev_type:
             LOG.error(
                 "Mdev type with name %s does not exist in device class with PCI address %s and path %s",
@@ -1135,7 +1144,7 @@ class DevCtl:
             LOG.error("No PCI address is specified")
             return None
         if not mdev_type_name:
-            LOG.error("No mdev UUID is specified")
+            LOG.error("No mdev type name is specified")
             return None
 
         if not mdev_uuid:
@@ -2241,7 +2250,7 @@ def main():
         metavar="PCI_ADDRESS",
         help="PCI address of the NVIDIA device where to create new mdev device",
     )
-    create_mdev_p.add_argument("mdev_type", metavar="MDEV_TYPE", help="mdev device type")
+    create_mdev_p.add_argument("mdev_type", metavar="MDEV_TYPE_OR_NAME", help="mdev device type or type name")
     create_mdev_p.add_argument(
         "-u",
         "--uuid",
