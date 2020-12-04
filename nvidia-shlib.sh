@@ -534,7 +534,10 @@ rebind-devices-to-nvidia() {
 # Jul 31 21:57:45 asr-telaviv nvidia-vgpud[4470]: error: failed to send vGPU configuration info to RM: 9
 
 enable-pci-passtrough() {
-    echo 'options vfio-pci ids=10de:1db6' > /etc/modprobe.d/vfio.conf
+    local pci_ids
+    # Comma delimited list of PCI device IDs
+    pci_ids=$(lspci -nn | sed -E '/[Nn][Vv][Ii][Dd][Ii][Aa]/!d;s/.*\[([[:xdigit:]]{4}:[[:xdigit:]]{4})\].*/\1,/' | sort -u | tr -d '\n' | sed 's/,$//';)
+    echo "options vfio-pci ids=$pci_ids" > /etc/modprobe.d/vfio.conf
     echo 'vfio-pci' > /etc/modules-load.d/vfio-pci.conf
 }
 
