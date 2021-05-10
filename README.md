@@ -538,7 +538,7 @@ usage: nvidia-dev-ctl.py attach-mdev [-h] [--virsh-trials N]
                                      UUID DOMAIN
 
 positional arguments:
-  UUID                  UUID of the mdev device to remove
+  UUID                  UUID of the mdev device to attach
   DOMAIN                domain name, id or uuid
 
 optional arguments:
