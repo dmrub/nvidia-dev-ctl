@@ -749,6 +749,7 @@ class DevCtl:
         self.virsh_connection = virsh_connection
         self._virsh_list_all_cache = None
         self._virsh_dumpxml_cache = {}
+        self._virsh_domain_state_cache = {}
         self.dry_run = dry_run
         self.debug = debug
         self._mdev_device_classes: Optional[
@@ -760,11 +761,11 @@ class DevCtl:
         self._has_virsh = False
         self._virsh_version = None
         try:
-            self._virsh_version = self.run_virsh(("--version", )).strip()
+            self._virsh_version = self.run_virsh(("--version",)).strip()
             self._has_virsh = True
         except FileNotFoundError as e:
-            if e.filename == 'virsh':
-                LOG.warning('The virsh command could not be found, libvirt is not installed')
+            if e.filename == "virsh":
+                LOG.warning("The virsh command could not be found, libvirt is not installed")
             else:
                 raise e
 
@@ -1226,13 +1227,21 @@ class DevCtl:
             self._virsh_dumpxml_cache.pop(domain_name, None)
         return result
 
-    def get_domain_state(self, domain: str):
-        output = self.run_virsh(["dominfo", domain])
+    def get_domain_state(self, domain_name: str, use_cache=False):
+        if use_cache:
+            result = self._virsh_domain_state_cache.get(domain_name, None)
+            if result is not None:
+                return result
+        output = self.run_virsh(["dominfo", "--domain", domain_name])
         m = RE_DOMAIN_STATE.search(output)
         if not m:
-            raise DevCtlException("Could not get state of the virsh domain {}".format(domain))
-        domain_state = m.group(1)
-        return domain_state
+            raise DevCtlException("Could not get state of the virsh domain {}".format(domain_name))
+        result = m.group(1)
+        if use_cache:
+            self._virsh_domain_state_cache[domain_name] = result
+        else:
+            self._virsh_domain_state_cache.pop(domain_name, None)
+        return result
 
     def restart_domain(self, domain: str, virsh_trials=60, virsh_delay=1.0, dry_run=False):
         dry_run_prefix = "Dry run: " if dry_run else ""
@@ -1313,12 +1322,21 @@ class DevCtl:
         return used_pci_devices
 
     def print_used_pci_devices(self, pci_address_filter: PCIAddressFilterCB, output_format=TEXT_FORMAT):
-        used_pci_devices_tbl = [("PCI_ADDRESS", "DEVICE", "VM_NAME")]
+        used_pci_devices_tbl = [("PCI_ADDRESS", "DEVICE", "VM_NAME", "VM_STATE")]
 
         used_pci_devices = self.get_used_pci_devices(pci_address_filter=pci_address_filter)
         for used_pci_device in used_pci_devices:
+            if used_pci_device.domain:
+                domain_state = self.get_domain_state(used_pci_device.domain, use_cache=True)
+            else:
+                domain_state = ""
             used_pci_devices_tbl.append(
-                (str(used_pci_device.pci_device.pci_address), used_pci_device.pci_device.name, used_pci_device.domain)
+                (
+                    str(used_pci_device.pci_device.pci_address),
+                    used_pci_device.pci_device.name,
+                    used_pci_device.domain,
+                    domain_state,
+                )
             )
         if output_format == TABLE_FORMAT:
             print_table(used_pci_devices_tbl)
@@ -1375,7 +1393,7 @@ class DevCtl:
             if output_all_columns:
                 return row
             else:
-                return row[0], row[1], row[2], row[4], row[7]
+                return row[0], row[1], row[2], row[4], row[7], row[8]
 
         used_mdev_devices_tbl = [
             column_filter(
@@ -1388,6 +1406,7 @@ class DevCtl:
                     "AVAILABLE_INSTANCES",
                     "DESCRIPTION",
                     "VM_NAME",
+                    "VM_STATE",
                 )
             )
         ]
@@ -1397,6 +1416,10 @@ class DevCtl:
         )
 
         for used_mdev_device in used_mdev_devices:
+            if used_mdev_device.domain:
+                domain_state = self.get_domain_state(used_mdev_device.domain, use_cache=True)
+            else:
+                domain_state = ""
             column = (
                 used_mdev_device.mdev_device.uuid,
                 used_mdev_device.mdev_device.pci_address,
@@ -1406,6 +1429,7 @@ class DevCtl:
                 used_mdev_device.mdev_device.mdev_type.available_instances,
                 used_mdev_device.mdev_device.mdev_type.description,
                 used_mdev_device.domain,
+                domain_state,
             )
             used_mdev_devices_tbl.append(column_filter(column))
 
@@ -1669,7 +1693,7 @@ class DevCtl:
             if output_all_columns:
                 return row
             else:
-                return row[0], row[1], row[2], row[3], row[4], row[8]
+                return row[0], row[1], row[2], row[3], row[4], row[8], row[9]
 
         devices_tbl_header = column_filter(
             (
@@ -1682,6 +1706,7 @@ class DevCtl:
                 "AVAILABLE_INSTANCES",
                 "DESCRIPTION",
                 "VM_NAME",
+                "VM_STATE",
             )
         )
 
@@ -1716,8 +1741,12 @@ class DevCtl:
                     domains = set([""])
 
                 for domain in domains:
+                    domain_state = self.get_domain_state(domain, use_cache=True) if domain else ""
+
                     devices_tbl.append(
-                        column_filter((pci_address, pci_device.name, pci_device.driver, "", "", "", "", "", domain))
+                        column_filter(
+                            (pci_address, pci_device.name, pci_device.driver, "", "", "", "", "", domain, domain_state)
+                        )
                     )
 
         try:
@@ -1738,6 +1767,8 @@ class DevCtl:
                         domains = set([mdev_device.nvidia.vm_name or ""])
 
                     for domain in domains:
+                        domain_state = self.get_domain_state(domain, use_cache=True) if domain else ""
+
                         devices_tbl.append(
                             column_filter(
                                 (
@@ -1750,6 +1781,7 @@ class DevCtl:
                                     mdev_device.mdev_type.available_instances,
                                     mdev_device.mdev_type.description,
                                     domain,
+                                    domain_state,
                                 )
                             )
                         )
