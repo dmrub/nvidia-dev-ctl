@@ -74,26 +74,26 @@ subcommands:
 
 ```
 $ nvidia-dev-ctl.py list-pci -o table
-PCI_ADDRESS  DEVICE_DRIVER PCI_DEVICE_PATH
-0000:43:00.0 nvidia        /sys/bus/pci/devices/0000:43:00.0
-0000:44:00.0 nvidia        /sys/bus/pci/devices/0000:44:00.0
-0000:45:00.0 nvidia        /sys/bus/pci/devices/0000:45:00.0
-0000:46:00.0 nvidia        /sys/bus/pci/devices/0000:46:00.0
-0000:47:00.0 nvidia        /sys/bus/pci/devices/0000:47:00.0
-0000:83:00.0 vfio-pci      /sys/bus/pci/devices/0000:83:00.0
-0000:84:00.0 vfio-pci      /sys/bus/pci/devices/0000:84:00.0
-0000:85:00.0 vfio-pci      /sys/bus/pci/devices/0000:85:00.0
-0000:86:00.0 vfio-pci      /sys/bus/pci/devices/0000:86:00.0
-0000:87:00.0 vfio-pci      /sys/bus/pci/devices/0000:87:00.0
+PCI_ADDRESS  DEVICE                         DEVICE_DRIVER
+0000:43:00.0 GV100GL [Tesla V100 PCIe 32GB] nvidia
+0000:44:00.0 GV100GL [Tesla V100 PCIe 32GB] nvidia
+0000:45:00.0 GV100GL [Tesla V100 PCIe 32GB] vfio-pci
+0000:46:00.0 GV100GL [Tesla V100 PCIe 32GB] nvidia
+0000:47:00.0 GV100GL [Tesla V100 PCIe 32GB] nvidia
+0000:83:00.0 GV100GL [Tesla V100 PCIe 32GB] vfio-pci
+0000:84:00.0 GV100GL [Tesla V100 PCIe 32GB] vfio-pci
+0000:85:00.0 GV100GL [Tesla V100 PCIe 32GB] vfio-pci
+0000:86:00.0 GV100GL [Tesla V100 PCIe 32GB] vfio-pci
+0000:87:00.0 GV100GL [Tesla V100 PCIe 32GB] vfio-pci
 ```
 
 The output can be restricted to the PCI addresses specified by the `-p` or `--pci-address` option:
 
 ```
 $ nvidia-dev-ctl.py list-pci -o table -p 0000:43:00.0 -p 0000:83:00.0
-PCI_ADDRESS  DEVICE_DRIVER PCI_DEVICE_PATH
-0000:43:00.0 nvidia        /sys/bus/pci/devices/0000:43:00.0
-0000:83:00.0 vfio-pci      /sys/bus/pci/devices/0000:83:00.0
+PCI_ADDRESS  DEVICE                         DEVICE_DRIVER
+0000:43:00.0 GV100GL [Tesla V100 PCIe 32GB] nvidia
+0000:83:00.0 GV100GL [Tesla V100 PCIe 32GB] vfio-pci
 ```
 
 In text mode only PCI addresses are output:
@@ -107,6 +107,7 @@ All `list-pci` command options:
 
 ```
 usage: nvidia-dev-ctl.py list-pci [-h] [-p PCI_ADDRESSES] [-o {table,text}]
+                                  [-O]
 
 optional arguments:
   -h, --help            show this help message and exit
@@ -114,6 +115,7 @@ optional arguments:
                         show only devices with specified pci addresses
   -o {table,text}, --output {table,text}
                         output format
+  -O, --output-all      output all columns
 ```
 
 ## list-mdev command
