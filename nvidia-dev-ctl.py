@@ -756,6 +756,18 @@ class DevCtl:
         ] = None  # maps PCI address to MdevDeviceClass
         self._mdev_devices: Optional[OrderedDict[str, MdevDevice]] = None  # maps UUID to MdevDevice
 
+        # Check virsh
+        self._has_virsh = False
+        self._virsh_version = None
+        try:
+            self._virsh_version = self.run_virsh(("--version", )).strip()
+            self._has_virsh = True
+        except FileNotFoundError as e:
+            if e.filename == 'virsh':
+                LOG.warning('The virsh command could not be found, libvirt is not installed')
+            else:
+                raise e
+
     def wait_for_device_path(self, device_path):
         if self.wait_for_device:
             LOG.debug("wait_for_device_path(%r)", device_path)  # ??? DEBUG
@@ -1189,6 +1201,9 @@ class DevCtl:
         return output
 
     def list_all_domains(self, use_cache=False):
+        if not self._has_virsh:
+            return []
+
         if use_cache and self._virsh_list_all_cache:
             return self._virsh_list_all_cache
         output = self.run_virsh(("list", "--all", "--name"))
