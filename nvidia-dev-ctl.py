@@ -25,6 +25,7 @@ import logging
 import os
 import os.path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -33,7 +34,7 @@ import uuid
 import xml.etree.ElementTree as ET
 from collections import OrderedDict, defaultdict, namedtuple
 from subprocess import CalledProcessError
-from typing import Callable, Optional, Sequence, List, Union, NamedTuple
+from typing import Callable, Optional, Sequence, List, Union, NamedTuple, Dict
 
 LOG = logging.getLogger(__name__)
 
@@ -52,6 +53,8 @@ TABLE_FORMAT = "table"
 
 PathWaiterFunc = Callable[[str], bool]
 PathWaiterCB = Optional[PathWaiterFunc]
+
+COMMANDS = {"virsh": "virsh", "lspci": "lspci", "systemctl": "systemctl", "modprobe": "modprobe"}
 
 
 class DevCtlException(Exception):
@@ -245,10 +248,12 @@ class PCIDevices(object):
         return default
 
     def parse(self):
-        args = ["lspci", "-D", "-vmm"]
+        global COMMANDS
+        command = [COMMANDS["lspci"], "-D", "-vmm"]
         if self.device_filter:
-            args.extend(("-d", self.device_filter))
-        output = subprocess.check_output(args).decode("utf-8")
+            command.extend(("-d", self.device_filter))
+        LOG.debug("Run: %s", " ".join(command))
+        output = subprocess.check_output(command).decode("utf-8")
         entry = None
         for line in output.splitlines():
             line = line.strip()
@@ -282,7 +287,10 @@ class UsedMdevDevice(
 
 
 def get_service_exit_code(service_name):
-    output = subprocess.check_output(["systemctl", "show", "-p", "ExecMainStatus", service_name]).decode("utf-8")
+    global COMMANDS
+    command = [COMMANDS["systemctl"], "show", "-p", "ExecMainStatus", service_name]
+    LOG.debug("Run: %s", " ".join(command))
+    output = subprocess.check_output(command).decode("utf-8")
     m = RE_EXEC_MAIN_STATUS.match(output)
     if m:
         return int(m.group(1))
@@ -290,10 +298,13 @@ def get_service_exit_code(service_name):
 
 
 def restart_nvidia_services(delay=5, dry_run=False):
+    global COMMANDS
     for svc in ("nvidia-vgpud.service", "nvidia-vgpu-mgr.service"):
         LOG.info("restart-nvidia-services: Restartig service %s", svc)
         if not dry_run:
-            subprocess.check_call(["systemctl", "restart", svc])
+            command = [COMMANDS["systemctl"], "restart", svc]
+            LOG.debug("Run: %s", " ".join(command))
+            subprocess.check_call(command)
             time.sleep(delay)
             if get_service_exit_code(svc) != 0:
                 LOG.error("restart-nvidia-services: Service %s failed", svc)
@@ -304,12 +315,17 @@ def restart_nvidia_services(delay=5, dry_run=False):
 
 
 def load_driver(driver_name, dry_run=False):
+    global COMMANDS
     if not dry_run:
-        subprocess.check_call(["modprobe", driver_name])
+        command = [COMMANDS["modprobe"], driver_name]
+        LOG.debug("Run: %s", " ".join(command))
+        subprocess.check_call(command)
     if driver_name == "nvidia":
         if not dry_run:
             try:
-                subprocess.check_call(["modprobe", "nvidia_vgpu_vfio"])
+                command = [COMMANDS["modprobe"], "nvidia_vgpu_vfio"]
+                LOG.debug("Run: %s", " ".join(command))
+                subprocess.check_call(command)
                 if not os.path.exists(MDEV_BUS_CLASS_PATH):
                     restart_nvidia_services()
             except CalledProcessError:
@@ -743,6 +759,7 @@ class DevCtl:
         dry_run=False,
         debug=False,
     ):
+        global COMMANDS
         self.wait_for_device = wait_for_device
         self.num_trials = num_trials
         self.wait_delay = wait_delay
@@ -764,8 +781,8 @@ class DevCtl:
             self._virsh_version = self.run_virsh(("--version",)).strip()
             self._has_virsh = True
         except FileNotFoundError as e:
-            if e.filename == "virsh":
-                LOG.warning("The virsh command could not be found, libvirt is not installed")
+            if e.filename in ("virsh", COMMANDS["virsh"]):
+                LOG.warning("Could not run '%s --version', libvirt is not installed", COMMANDS["virsh"])
             else:
                 raise e
 
@@ -1192,7 +1209,8 @@ class DevCtl:
             return False
 
     def run_virsh(self, args: Sequence[str]):
-        virsh_command = ["virsh"]
+        global COMMANDS
+        virsh_command = [COMMANDS["virsh"]]
         if self.virsh_connection:
             virsh_command.append("-c")
             virsh_command.append(self.virsh_connection)
@@ -2120,8 +2138,25 @@ def restart_services(args):
         return 1
 
 
+def find_commands(command_names: Sequence[str], issue_warnings=False):
+    commands: Dict[str, str] = {}
+    all_found = True
+    for command_name in command_names:
+        command_path = shutil.which(command_name)
+        if command_path is not None:
+            commands[command_name] = command_path
+        else:
+            if issue_warnings:
+                logfunc = LOG.warning
+            else:
+                logfunc = LOG.info
+            logfunc("The %s command could not be found", command_name)
+            all_found = False
+    return commands, all_found
+
+
 def main():
-    global DEV_CTL, PCI_DEVICES
+    global DEV_CTL, PCI_DEVICES, COMMANDS
 
     # Override locale for all subprocesses
     os.environ["LC_ALL"] = "C"
@@ -2495,6 +2530,20 @@ def main():
     # If args.subcommand is overwritten with None, restore the default value
     if not args.subcommand:
         args.subcommand = parser.get_default("subcommand")
+
+    # Try to find all commands
+    found_commands, all_found = find_commands(COMMANDS.keys(), issue_warnings=(sys.platform == "win32"))
+    if not all_found and sys.platform != "win32":
+        # Try to fix paths
+        paths = os.environ.get("PATH", os.defpath).split(os.pathsep)
+        for bin_path in ("/usr/local/bin", "/usr/bin", "/usr/local/sbin", "/usr/sbin"):
+            if bin_path not in paths and os.path.exists(bin_path):
+                paths.append(bin_path)
+                LOG.info("Add the path %s to the environment variable PATH", bin_path)
+        os.environ["PATH"] = os.pathsep.join(paths)
+        found_commands, all_found = find_commands(COMMANDS.keys(), issue_warnings=True)
+    COMMANDS.update(found_commands)
+    LOG.debug("Found commands %s", COMMANDS)
 
     PCI_DEVICES = PCIDevices()
 
