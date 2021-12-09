@@ -2123,6 +2123,9 @@ def restart_services(args):
 def main():
     global DEV_CTL, PCI_DEVICES
 
+    # Override locale for all subprocesses
+    os.environ["LC_ALL"] = "C"
+
     default_virsh_connection = None
     # Smart logic to get default libvirt connection
     user_groups = [grp.getgrgid(g).gr_name for g in os.getgroups()]
