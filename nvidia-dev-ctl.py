@@ -2492,6 +2492,9 @@ def main():
         LOG.info("The user set the URI of the virsh connection to: %s", args.connection)
 
     args = parser.parse_args()
+    # If args.subcommand is overwritten with None, restore the default value
+    if not args.subcommand:
+        args.subcommand = parser.get_default("subcommand")
 
     PCI_DEVICES = PCIDevices()
 
