@@ -20,20 +20,20 @@
 # https://man7.org/linux/man-pages/man5/sysfs.5.html
 
 import argparse
+import grp
 import logging
 import os
 import os.path
-import grp
-import subprocess
-from subprocess import CalledProcessError
-import sys
-import time
 import re
-from collections import OrderedDict, defaultdict, namedtuple
-from typing import Callable, Optional, Sequence, List, Union, NamedTuple
-import uuid
+import subprocess
+import sys
 import tempfile
+import time
+import uuid
 import xml.etree.ElementTree as ET
+from collections import OrderedDict, defaultdict, namedtuple
+from subprocess import CalledProcessError
+from typing import Callable, Optional, Sequence, List, Union, NamedTuple
 
 LOG = logging.getLogger(__name__)
 
